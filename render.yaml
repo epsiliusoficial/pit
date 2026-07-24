@@ -1,0 +1,41 @@
+# Configuración real de Render para el backend de Pit.
+# Al conectar tu repo de GitHub en Render, esto define el servicio automáticamente
+# (Render lee este archivo solo; no hace falta configurar nada a mano en la UI).
+services:
+  - type: web
+    name: pit-backend
+    runtime: node
+    plan: starter
+    rootDir: backend
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npx prisma migrate deploy && npm start
+    healthCheckPath: /health # ahora verifica DB y cache de verdad, no solo "el proceso responde"
+    envVars:
+      - key: DATABASE_URL
+        sync: false # se pega el connection string de tu Postgres de Render acá
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        sync: false # ej: https://pit.vercel.app — se la pasás al desplegar
+      - key: WEBAUTHN_RP_ID
+        sync: false # opcional: dominio del frontend sin protocolo, ej pit.vercel.app
+      - key: REDIS_URL
+        sync: false # opcional: vacía = memoria RAM automática
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ADMIN_SECRET
+        generateValue: true
+      - key: ENCRYPTION_MASTER_KEY
+        generateValue: true # cifra el contenido de los mensajes en reposo (AES-256-GCM)
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+
+databases:
+  - name: pit-db
+    plan: starter
+    databaseName: pit_db
+    user: pit_user

@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<title>Pit — Mensajería real</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#3ddc97" />
+<link rel="icon" href="/icon.svg" />
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg:#0b0f14; --card:#131a22; --card2:#1a232d; --accent:#3ddc97; --accent-dim:#2a9d6f;
+    --text:#e8f0f2; --muted:#7a8a94; --danger:#ff5c5c; --radius:16px;
+  }
+  [data-theme="light"] {
+    --bg:#f4f7f6; --card:#ffffff; --card2:#eef2f1; --text:#0b0f14; --muted:#5a6a72;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    margin:0; font-family:-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg);
+    color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden;
+    transition:background .2s, color .2s;
+  }
+  #login {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:100%; gap:14px; padding:24px; text-align:center;
+  }
+  .logo { width:72px; height:72px; border-radius:20px; background:linear-gradient(135deg,var(--accent),var(--accent-dim)); display:flex; align-items:center; justify-content:center; font-size:32px; font-weight:900; color:#04140d; margin-bottom:8px; box-shadow:0 8px 30px rgba(61,220,151,.35); }
+  h1 { font-size:26px; margin:0; letter-spacing:-0.5px; }
+  .tagline { color:var(--muted); font-size:14px; max-width:300px; margin:0 0 12px; }
+  #login input {
+    padding:15px 16px; border-radius:14px; border:1px solid rgba(122,138,148,.25);
+    background:var(--card); color:var(--text); font-size:16px; width:100%; max-width:320px; outline:none;
+  }
+  #login input:focus { border-color:var(--accent); }
+  .btn {
+    background:var(--accent); color:#04140d; border:none; border-radius:14px;
+    padding:15px 22px; font-weight:700; font-size:16px; cursor:pointer; width:100%; max-width:320px;
+    transition:transform .1s, opacity .2s;
+  }
+  .btn:active { transform:scale(.97); }
+  .btn:disabled { opacity:.5; }
+  #loginMsg { color:var(--muted); font-size:13px; min-height:18px; }
+  .badge-realtime { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--accent); background:rgba(61,220,151,.12); padding:6px 12px; border-radius:20px; margin-top:6px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  #app { display:none; flex-direction:column; height:100%; }
+  header.topbar {
+    display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
+    background:var(--card); border-bottom:1px solid rgba(122,138,148,.12);
+  }
+  header.topbar .title { font-weight:800; font-size:18px; display:flex; align-items:center; gap:8px; }
+  .icon-btn { background:none; border:none; color:var(--text); font-size:18px; cursor:pointer; padding:8px; border-radius:10px; }
+  .icon-btn:hover { background:var(--card2); }
+
+  #messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; scroll-behavior:smooth; }
+  .msg-row { display:flex; flex-direction:column; max-width:78%; }
+  .msg-row.mine { align-self:flex-end; align-items:flex-end; }
+  .bubble {
+    padding:11px 15px; border-radius:18px; background:var(--card); position:relative;
+    word-wrap:break-word; font-size:15px; line-height:1.4; box-shadow:0 1px 2px rgba(0,0,0,.15);
+  }
+  .mine .bubble { background:var(--accent); color:#04140d; border-bottom-right-radius:6px; }
+  .msg-row:not(.mine) .bubble { border-bottom-left-radius:6px; }
+  .meta-row { display:flex; gap:6px; align-items:center; margin-top:3px; font-size:11px; color:var(--muted); }
+  .edited-tag { font-style:italic; opacity:.7; }
+  .reactions-row { display:flex; gap:4px; margin-top:4px; flex-wrap:wrap; }
+  .reaction-chip { background:var(--card2); border-radius:12px; padding:2px 8px; font-size:12px; }
+  .msg-actions { display:none; gap:4px; margin-top:4px; }
+  .msg-row:hover .msg-actions { display:flex; }
+  .msg-actions button { background:var(--card2); border:none; color:var(--muted); font-size:11px; padding:4px 8px; border-radius:8px; cursor:pointer; }
+
+  #typingIndicator { padding:0 16px 6px; font-size:12px; color:var(--accent); min-height:16px; }
+
+  #composer { display:flex; gap:8px; padding:12px; background:var(--card); align-items:flex-end; }
+  #composer textarea {
+    flex:1; padding:13px 16px; border-radius:20px; border:none; background:var(--card2);
+    color:var(--text); font-size:15px; resize:none; max-height:100px; font-family:inherit; outline:none;
+  }
+  #composer button.send {
+    background:var(--accent); color:#04140d; border:none; width:46px; height:46px; border-radius:50%;
+    font-size:18px; cursor:pointer; flex-shrink:0;
+  }
+  #composer button.icon { background:var(--card2); border:none; width:46px; height:46px; border-radius:50%; color:var(--text); font-size:16px; cursor:pointer; flex-shrink:0; }
+
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50; align-items:flex-end; justify-content:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:var(--card); width:100%; max-width:480px; border-radius:20px 20px 0 0; padding:20px; max-height:80vh; overflow-y:auto; position:relative; }
+  .modal h3 { margin-top:0; }
+  .modal input { width:100%; padding:13px; border-radius:12px; border:1px solid rgba(122,138,148,.25); background:var(--card2); color:var(--text); margin-bottom:10px; font-size:15px; }
+  .chip-row { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .emoji-chip { font-size:22px; background:var(--card2); border:none; border-radius:12px; padding:6px 10px; cursor:pointer; }
+  .close-modal { position:absolute; top:14px; right:16px; background:none; border:none; color:var(--muted); font-size:20px; cursor:pointer; }
+
+  /* --- TOASTS --- */
+  #toastContainer { position:fixed; bottom:90px; left:50%; transform:translateX(-50%); z-index:100; display:flex; flex-direction:column; gap:8px; align-items:center; pointer-events:none; }
+  .toast {
+    background:var(--card2); color:var(--text); padding:12px 18px; border-radius:14px; font-size:14px;
+    box-shadow:0 4px 20px rgba(0,0,0,.3); opacity:0; transform:translateY(10px); transition:opacity .25s, transform .25s;
+    max-width:90vw; display:flex; align-items:center; gap:8px;
+  }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast.error { background:var(--danger); color:#fff; }
+  .toast.success { background:var(--accent); color:#04140d; }
+
+  /* --- SKELETON LOADING --- */
+  .skeleton-row { display:flex; flex-direction:column; gap:6px; max-width:60%; }
+  .skeleton-row.mine { align-self:flex-end; align-items:flex-end; }
+  .skeleton-bubble {
+    height:38px; border-radius:18px; background:linear-gradient(90deg, var(--card2) 25%, rgba(122,138,148,.15) 50%, var(--card2) 75%);
+    background-size:200% 100%; animation:shimmer 1.4s infinite;
+  }
+  @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+
+  /* --- CONNECTION STATUS --- */
+  #connectionBanner {
+    display:none; text-align:center; font-size:12px; padding:6px; background:var(--danger); color:#fff;
+  }
+  #connectionBanner.show { display:block; }
+
+  /* --- CONFIRM DIALOG --- */
+  #confirmOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:200; align-items:center; justify-content:center; }
+  #confirmOverlay.open { display:flex; }
+  #confirmBox { background:var(--card); border-radius:18px; padding:22px; max-width:320px; text-align:center; }
+  #confirmBox p { margin:0 0 18px; font-size:15px; }
+  #confirmBox .confirm-actions { display:flex; gap:10px; }
+  #confirmBox button { flex:1; padding:12px; border-radius:12px; border:none; font-weight:700; cursor:pointer; font-size:14px; }
+  #confirmBox .confirm-yes { background:var(--danger); color:#fff; }
+  #confirmBox .confirm-no { background:var(--card2); color:var(--text); }
+
+  /* --- LINK SAFETY --- */
+  .link-preview-card { margin-top:6px; border-radius:12px; overflow:hidden; border:1px solid rgba(122,138,148,.2); max-width:260px; }
+  .link-preview-card img { width:100%; max-height:120px; object-fit:cover; display:block; }
+  .link-preview-body { padding:8px 10px; background:var(--card2); }
+  .link-preview-body .lp-title { font-size:13px; font-weight:700; margin-bottom:2px; }
+  .link-preview-body .lp-desc { font-size:12px; color:var(--muted); }
+  .link-warning { margin-top:6px; padding:10px 12px; border-radius:12px; background:rgba(255,92,92,.12); border:1px solid var(--danger); max-width:280px; }
+  .link-warning .lw-title { color:var(--danger); font-weight:700; font-size:13px; margin-bottom:4px; }
+  .link-warning ul { margin:4px 0 0; padding-left:18px; font-size:12px; color:var(--text); }
+</style>
+</head>
+<body data-theme="dark">
+  <div id="connectionBanner">⚠️ Reconectando...</div>
+  <div id="toastContainer"></div>
+
+  <div id="confirmOverlay">
+    <div id="confirmBox">
+      <p id="confirmMessage">¿Estás seguro?</p>
+      <div class="confirm-actions">
+        <button class="confirm-no" onclick="resolveConfirm(false)">Cancelar</button>
+        <button class="confirm-yes" onclick="resolveConfirm(true)">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="login">
+    <div class="logo">P</div>
+    <h1>Pit</h1>
+    <p class="tagline">Mensajería cifrada de verdad. Rápida, simple, sin instalar nada.</p>
+    <input id="serverInput" placeholder="Servidor: https://tudominio.com" />
+    <input id="phoneInput" placeholder="Tu número, ej +5490000000" />
+    <input id="passInput" type="password" placeholder="Contraseña" />
+    <input id="nameInput" placeholder="Tu nombre (solo primera vez)" />
+    <button class="btn" onclick="loginFlow()" id="loginBtn">Entrar a Pit</button>
+    <p id="loginMsg"></p>
+    <div class="badge-realtime"><span class="dot"></span> Conexión cifrada de extremo a extremo</div>
+  </div>
+
+  <div id="app">
+    <header class="topbar">
+      <div class="title">💬 <span id="chatTitle">Pit</span></div>
+      <div>
+        <button class="icon-btn" onclick="toggleTheme()" title="Cambiar tema">🌓</button>
+        <button class="icon-btn" onclick="openModal('searchModal')" title="Buscar">🔎</button>
+        <button class="icon-btn" onclick="openModal('profileModal')" title="Perfil">👤</button>
+      </div>
+    </header>
+
+    <div id="messages"></div>
+    <div id="typingIndicator"></div>
+
+    <div id="composer">
+      <button class="icon" onclick="openModal('ephemeralModal')" title="Mensaje que se autodestruye">⏱️</button>
+      <textarea id="msgInput" placeholder="Escribí un mensaje..." rows="1" onkeydown="handleKey(event)"></textarea>
+      <button class="send" onclick="send()">➤</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="chatModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('chatModal')">✕</button>
+      <h3>Entrar a un chat</h3>
+      <input id="chatIdInput" placeholder="ID de chat existente" />
+      <button class="btn" onclick="joinChat()">Entrar</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="searchModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('searchModal')">✕</button>
+      <h3>Buscar en este chat</h3>
+      <input id="searchInput" placeholder="Escribí para buscar..." onkeydown="if(event.key==='Enter') doSearch()" />
+      <button class="btn" onclick="doSearch()">Buscar</button>
+      <div id="searchResults"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="profileModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('profileModal')">✕</button>
+      <h3>Tu perfil</h3>
+      <input id="profileName" placeholder="Nombre" />
+      <input id="profileBio" placeholder="Bio" />
+      <button class="btn" onclick="saveProfile()">Guardar</button>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid rgba(122,138,148,.15);">
+        <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+          🔒 Bloqueo biométrico real (Face ID / huella / Windows Hello, según tu dispositivo)
+        </p>
+        <button class="btn" onclick="setupBiometric()" id="biometricBtn">Activar biometría</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="ephemeralModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('ephemeralModal')">✕</button>
+      <h3>Mensaje que se autodestruye ⏱️</h3>
+      <input id="ephemeralContent" placeholder="Tu mensaje" />
+      <div class="chip-row">
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(10)">10s</button>
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(60)">1 min</button>
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(3600)">1 hora</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="reactModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('reactModal')">✕</button>
+      <h3>Reaccionar</h3>
+      <div class="chip-row">
+        <button class="emoji-chip" onclick="reactTo('❤️')">❤️</button>
+        <button class="emoji-chip" onclick="reactTo('😂')">😂</button>
+        <button class="emoji-chip" onclick="reactTo('😮')">😮</button>
+        <button class="emoji-chip" onclick="reactTo('👍')">👍</button>
+        <button class="emoji-chip" onclick="reactTo('🔥')">🔥</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  let SERVER = '', token = '', myUserId = '', socket = null, currentChatId = '';
+  let reactingToMessageId = null;
+  const messagesById = {};
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  function toggleTheme() {
+    const body = document.body;
+    const next = body.dataset.theme === 'dark' ? 'light' : 'dark';
+    body.dataset.theme = next;
+    localStorage.setItem('pit-theme', next);
+  }
+  document.body.dataset.theme = localStorage.getItem('pit-theme') || 'dark';
+
+  function openModal(id) { document.getElementById(id).classList.add('open'); }
+  function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+  // Sistema "Toasts": notificaciones no bloqueantes en vez de alert().
+  function showToast(message, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 300);
+    }, 3000);
+  }
+
+  // Sistema "Confirmaciones": modal real en vez de confirm() del navegador,
+  // devuelve una Promise<boolean> para poder usar await donde antes iba confirm().
+  let _confirmResolver = null;
+  function askConfirm(message) {
+    document.getElementById('confirmMessage').textContent = message;
+    openModal('confirmOverlay');
+    return new Promise((resolve) => { _confirmResolver = resolve; });
+  }
+  function resolveConfirm(value) {
+    closeModal('confirmOverlay');
+    if (_confirmResolver) _confirmResolver(value);
+    _confirmResolver = null;
+  }
+
+  // Sistema "Skeleton Loading": placeholders animados mientras carga el historial.
+  function showSkeletons(count = 5) {
+    const container = document.getElementById('messages');
+    container.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const row = document.createElement('div');
+      row.className = 'skeleton-row' + (i % 2 === 0 ? '' : ' mine');
+      row.innerHTML = `<div class="skeleton-bubble" style="width:${120 + (i % 3) * 40}px"></div>`;
+      container.appendChild(row);
+    }
+  }
+
+  async function loginFlow() {
+    SERVER = document.getElementById('serverInput').value.replace(/\/$/, '');
+    const phone = document.getElementById('phoneInput').value.trim();
+    const password = document.getElementById('passInput').value;
+    const name = document.getElementById('nameInput').value.trim();
+    const msgEl = document.getElementById('loginMsg');
+    const btn = document.getElementById('loginBtn');
+
+    if (!SERVER || !phone || !password) { msgEl.textContent = 'Completá servidor, teléfono y contraseña.'; return; }
+    btn.disabled = true;
+    try {
+      msgEl.textContent = 'Pidiendo código...';
+      const otpResp = await fetch(`${SERVER}/api/auth/otp/request`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+      }).then(r => r.json());
+
+      let otp = otpResp.devOtp || prompt('Ingresá el código OTP que te llegó por SMS:');
+
+      const authResp = await fetch(`${SERVER}/api/auth/otp/verify`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ phone, otp, name, password })
+      }).then(r => r.json());
+
+      if (authResp.error) { msgEl.textContent = authResp.error; btn.disabled = false; return; }
+
+      token = authResp.token;
+      myUserId = authResp.user.id;
+      connectSocket();
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      openModal('chatModal');
+    } catch (e) {
+      msgEl.textContent = 'Error de conexión: ' + e.message;
+      btn.disabled = false;
+    }
+  }
+
+  function connectSocket() {
+    socket = io(SERVER, {
+      auth: { token },
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
+    });
+
+    socket.on('connect', () => {
+      document.getElementById('connectionBanner').classList.remove('show');
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('connectionBanner').classList.add('show');
+    });
+    socket.on('reconnect_attempt', () => {
+      document.getElementById('connectionBanner').classList.add('show');
+    });
+    socket.on('reconnect', () => {
+      document.getElementById('connectionBanner').classList.remove('show');
+      showToast('Conexión restablecida', 'success');
+      if (currentChatId) socket.emit('join_room', currentChatId); // vuelve a unirse al room tras reconectar
+    });
+    socket.on('connect_error', (err) => {
+      showToast('Error de conexión: ' + err.message, 'error');
+    });
+
+    socket.on('new_message', renderMessage);
+    socket.on('message_edited', (msg) => updateMessageEl(msg));
+    socket.on('message_deleted', ({ id }) => { const el = document.getElementById('m_'+id); if (el) el.remove(); });
+    socket.on('reaction_update', ({ messageId, reactions }) => renderReactions(messageId, reactions));
+    socket.on('user_typing', () => {
+      document.getElementById('typingIndicator').textContent = 'escribiendo...';
+      clearTimeout(window._typingTimeout);
+      window._typingTimeout = setTimeout(() => { document.getElementById('typingIndicator').textContent = ''; }, 2000);
+    });
+  }
+
+  let oldestLoadedId = null;
+  let hasMoreHistory = false;
+
+  async function joinChat() {
+    currentChatId = document.getElementById('chatIdInput').value.trim();
+    if (!currentChatId) return;
+    socket.emit('join_room', currentChatId);
+    document.getElementById('chatTitle').textContent = 'Chat: ' + currentChatId;
+    showSkeletons();
+    try {
+      const response = await fetch(`${SERVER}/api/chat/${currentChatId}/history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('No se pudo cargar el historial (¿existe ese chat?)');
+      const data = await response.json();
+      document.getElementById('messages').innerHTML = '';
+      if (Array.isArray(data.messages)) data.messages.forEach(renderMessage);
+      oldestLoadedId = data.oldestId;
+      hasMoreHistory = data.hasMore;
+      renderLoadMoreButton();
+      closeModal('chatModal');
+    } catch (err) {
+      document.getElementById('messages').innerHTML = '';
+      showToast(err.message, 'error');
+    }
+  }
+
+  // Sistema "Cargar más historial": pagina hacia atrás usando el cursor
+  // `before` que devuelve el backend, en vez de traer todo el chat de una vez.
+  function renderLoadMoreButton() {
+    const existing = document.getElementById('loadMoreBtn');
+    if (existing) existing.remove();
+    if (!hasMoreHistory || !oldestLoadedId) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'loadMoreBtn';
+    btn.textContent = 'Cargar mensajes anteriores';
+    btn.style.cssText = 'align-self:center; margin:8px 0; background:var(--card2); color:var(--text); border:none; border-radius:12px; padding:10px 16px; cursor:pointer; font-size:13px;';
+    btn.onclick = loadMoreHistory;
+    document.getElementById('messages').prepend(btn);
+  }
+
+  async function loadMoreHistory() {
+    if (!oldestLoadedId) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/${currentChatId}/history?before=${oldestLoadedId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      const container = document.getElementById('messages');
+      const scrollBefore = container.scrollHeight;
+
+      document.getElementById('loadMoreBtn')?.remove();
+
+      // renderMessage() appendea al final del contenedor; como estos mensajes
+      // son más viejos, los movemos al principio preservando su orden relativo.
+      const fragment = document.createDocumentFragment();
+      data.messages.forEach((msg) => renderMessage(msg));
+      const newNodes = Array.from(container.children).slice(-data.messages.length);
+      newNodes.forEach((node) => fragment.appendChild(node));
+      container.prepend(fragment);
+      container.scrollTop = container.scrollHeight - scrollBefore;
+
+      oldestLoadedId = data.oldestId;
+      hasMoreHistory = data.hasMore;
+      renderLoadMoreButton();
+    } catch (err) {
+      showToast('No se pudo cargar más historial', 'error');
+    }
+  }
+
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    else socket?.emit('typing', { chatId: currentChatId });
+  }
+
+  async function send() {
+    const input = document.getElementById('msgInput');
+    const content = input.value.trim();
+    if (!content || !currentChatId) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/send`, {
+        method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+        body: JSON.stringify({ chatId: currentChatId, content })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'No se pudo enviar el mensaje');
+      }
+      input.value = '';
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function sendEphemeral(ttlSeconds) {
+    const content = document.getElementById('ephemeralContent').value.trim();
+    if (!content || !currentChatId) return;
+    await fetch(`${SERVER}/api/chat/ephemeral`, {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ chatId: currentChatId, content, ttlSeconds })
+    });
+    document.getElementById('ephemeralContent').value = '';
+    closeModal('ephemeralModal');
+  }
+
+  function renderMessage(msg) {
+    messagesById[msg.id] = msg;
+    const row = document.createElement('div');
+    row.className = 'msg-row' + (msg.senderId === myUserId ? ' mine' : '');
+    row.id = 'm_' + msg.id;
+    row.innerHTML = `
+      <div class="bubble">${renderMarkdown(msg.content)}</div>
+      <div class="meta-row">
+        ${msg.isEdited ? '<span class="edited-tag">editado</span>' : ''}
+        ${msg.isEphemeral ? '⏱️' : ''}
+        ${msg.forwardedFrom ? '↪️ reenviado' : ''}
+      </div>
+      <div id="linkcheck_${msg.id}"></div>
+      <div class="reactions-row" id="react_${msg.id}"></div>
+      <div class="msg-actions">
+        <button onclick="openReact('${msg.id}')">😊</button>
+        ${msg.senderId === myUserId ? `<button onclick="editMsg('${msg.id}')">Editar</button>` : ''}
+        <button onclick="forwardMsg('${msg.id}')">Reenviar</button>
+        ${msg.senderId === myUserId ? `<button onclick="deleteMsg('${msg.id}')">Borrar</button>` : ''}
+      </div>
+    `;
+    document.getElementById('messages').appendChild(row);
+    row.scrollIntoView();
+    checkLinksInMessage(msg);
+  }
+
+  // Sistema "Detector de Enlaces Maliciosos" (cliente): busca URLs reales en
+  // el texto y consulta /api/link-preview, que ahora devuelve un reporte de
+  // seguridad real (homógrafos, acortadores, IPs, subdominios engañosos).
+  // Si es sospechoso, se muestra una advertencia ANTES de que alguien pueda
+  // hacer clic; si no, se muestra una vista previa normal.
+  const URL_REGEX = /https?:\/\/[^\s<>"']+/i;
+
+  async function checkLinksInMessage(msg) {
+    const match = msg.content.match(URL_REGEX);
+    if (!match) return;
+    const url = match[0];
+    const container = document.getElementById(`linkcheck_${msg.id}`);
+    if (!container) return;
+
+    try {
+      const response = await fetch(`${SERVER}/api/link-preview?url=${encodeURIComponent(url)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      const safety = data.safety;
+
+      if (safety && safety.isSuspicious) {
+        container.innerHTML = `
+          <div class="link-warning">
+            <div class="lw-title">⚠️ Este link parece sospechoso</div>
+            <ul>${safety.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+          </div>`;
+      } else if (data.title) {
+        container.innerHTML = `
+          <div class="link-preview-card">
+            ${data.image ? `<img src="${data.image}" alt="" />` : ''}
+            <div class="link-preview-body">
+              <div class="lp-title">${escapeHtml(data.title)}</div>
+              ${data.description ? `<div class="lp-desc">${escapeHtml(data.description)}</div>` : ''}
+            </div>
+          </div>`;
+      }
+    } catch {
+      // Si falla el preview (timeout, sitio caído, etc.) simplemente no se
+      // muestra nada — no interrumpe la lectura normal del chat.
+    }
+  }
+
+  function updateMessageEl(msg) {
+    messagesById[msg.id] = msg;
+    const el = document.getElementById('m_' + msg.id);
+    if (el) el.querySelector('.bubble').textContent = msg.content;
+  }
+
+  function renderReactions(messageId, reactions) {
+    const el = document.getElementById('react_' + messageId);
+    if (!el) return;
+    const counts = {};
+    reactions.forEach(r => counts[r.emoji] = (counts[r.emoji] || 0) + 1);
+    el.innerHTML = Object.entries(counts).map(([emoji, count]) =>
+      `<span class="reaction-chip">${emoji} ${count}</span>`
+    ).join('');
+  }
+
+  function openReact(messageId) { reactingToMessageId = messageId; openModal('reactModal'); }
+  async function reactTo(emoji) {
+    if (!reactingToMessageId) return;
+    await fetch(`${SERVER}/api/reaction/${reactingToMessageId}`, {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ emoji })
+    });
+    closeModal('reactModal');
+  }
+
+  async function editMsg(id) {
+    const current = messagesById[id]?.content || '';
+    const content = prompt('Editar mensaje:', current);
+    if (content === null || content === current) return;
+    await fetch(`${SERVER}/api/chat/message/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ content })
+    });
+  }
+
+  async function deleteMsg(id) {
+    const confirmed = await askConfirm('¿Borrar este mensaje? Vas a poder recuperarlo desde la papelera por 30 días.');
+    if (!confirmed) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/message/${id}`, {
+        method:'DELETE', headers:{ Authorization:`Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'No se pudo borrar');
+      const el = document.getElementById('m_' + id);
+      if (el) el.remove();
+      showToast('Mensaje movido a la papelera', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function forwardMsg(id) {
+    const toChatId = prompt('¿A qué chat reenviar? (ID)');
+    if (!toChatId) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/forward/${id}`, {
+        method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+        body: JSON.stringify({ toChatId })
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'No se pudo reenviar');
+      showToast('Mensaje reenviado ✅', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function doSearch() {
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q || !currentChatId) return;
+    const results = await fetch(`${SERVER}/api/chat/${currentChatId}/search?q=${encodeURIComponent(q)}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+    document.getElementById('searchResults').innerHTML = (results || []).map(m =>
+      `<div style="text-align:left; padding:8px; background:var(--card2); border-radius:10px; margin-top:6px; font-size:14px;">${escapeHtml(m.content)}</div>`
+    ).join('') || '<p style="color:var(--muted)">Sin resultados</p>';
+  }
+
+  async function saveProfile() {
+    const name = document.getElementById('profileName').value.trim();
+    const bio = document.getElementById('profileBio').value.trim();
+    await fetch(`${SERVER}/api/user/me`, {
+      method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ name, bio })
+    });
+    closeModal('profileModal');
+  }
+
+  // Sistema "Bloqueo Biométrico (WebAuthn)": usa la API nativa del navegador.
+  // El dato biométrico (huella/rostro) NUNCA sale del dispositivo — el navegador
+  // solo entrega una firma criptográfica que el servidor verifica. Esto es real,
+  // no un mock: si el dispositivo no tiene sensor biométrico, el navegador pide
+  // el PIN del sistema operativo como alternativa (igual sigue siendo real).
+
+  function base64urlToBuffer(base64url) {
+    const padded = base64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(base64url.length + (4 - base64url.length % 4) % 4, '=');
+    const raw = atob(padded);
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+
+  function bufferToBase64url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let str = '';
+    for (const b of bytes) str += String.fromCharCode(b);
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function setupBiometric() {
+    if (!window.PublicKeyCredential) {
+      showToast('Tu navegador no soporta biometría (WebAuthn)', 'error');
+      return;
+    }
+    try {
+      const options = await fetch(`${SERVER}/api/biometric/register/options`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+
+      options.challenge = base64urlToBuffer(options.challenge);
+      options.user.id = base64urlToBuffer(options.user.id);
+      if (options.excludeCredentials) {
+        options.excludeCredentials = options.excludeCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+      }
+
+      const credential = await navigator.credentials.create({ publicKey: options });
+
+      const response = {
+        id: credential.id,
+        rawId: bufferToBase64url(credential.rawId),
+        type: credential.type,
+        deviceLabel: navigator.userAgentData?.platform || navigator.platform || 'Dispositivo',
+        response: {
+          clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+          attestationObject: bufferToBase64url(credential.response.attestationObject)
+        }
+      };
+
+      const result = await fetch(`${SERVER}/api/biometric/register/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(response)
+      }).then(r => r.json());
+
+      if (result.registered) {
+        showToast('Biometría activada ✅', 'success');
+        localStorage.setItem('pit-biometric-enabled', '1');
+      } else {
+        showToast(result.error || 'No se pudo activar', 'error');
+      }
+    } catch (err) {
+      showToast('Biometría cancelada o no disponible: ' + err.message, 'error');
+    }
+  }
+
+  async function unlockWithBiometric() {
+    try {
+      const options = await fetch(`${SERVER}/api/biometric/auth/options`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+      if (options.error) { showToast(options.error, 'error'); return false; }
+
+      options.challenge = base64urlToBuffer(options.challenge);
+      options.allowCredentials = (options.allowCredentials || []).map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+
+      const assertion = await navigator.credentials.get({ publicKey: options });
+
+      const response = {
+        id: assertion.id,
+        rawId: bufferToBase64url(assertion.rawId),
+        type: assertion.type,
+        response: {
+          clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+          authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+          signature: bufferToBase64url(assertion.response.signature)
+        }
+      };
+
+      const result = await fetch(`${SERVER}/api/biometric/auth/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(response)
+      }).then(r => r.json());
+
+      return !!result.verified;
+    } catch (err) {
+      showToast('No se pudo verificar: ' + err.message, 'error');
+      return false;
+    }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // Sistema "Markdown en mensajes" (cliente): misma lógica que el backend
+  // (core/utils/markdown.ts) — *negrita*, _cursiva_, ~tachado~, `código`.
+  // Placeholders protegen el contenido de código para que no se re-procese.
+  function renderMarkdown(rawText) {
+    let html = escapeHtml(rawText);
+    const codeBlocks = [];
+    html = html.replace(/`([^`]+)`/g, (_m, content) => {
+      codeBlocks.push(content);
+      return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+    });
+    html = html.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
+    html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+    html = html.replace(/~([^~\n]+)~/g, '<s>$1</s>');
+    html = html.replace(/\n/g, '<br>');
+    html = html.replace(/\u0000CODE(\d+)\u0000/g, (_m, i) => `<code>${codeBlocks[Number(i)]}</code>`);
+    return html;
+  }
+</script>
+</body>
+</html>

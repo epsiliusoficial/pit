@@ -1,0 +1,54 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pit_db
+    environment:
+      POSTGRES_USER: pit_user
+      POSTGRES_PASSWORD: pit_pass
+      POSTGRES_DB: pit_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pit_data:/var/lib/postgresql/data
+    networks:
+      - pit_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: pit_cache
+    ports:
+      - "6379:6379"
+    networks:
+      - pit_network
+
+  backend:
+    build: ./backend
+    container_name: pit_backend
+    environment:
+      DATABASE_URL: postgresql://pit_user:pit_pass@postgres:5432/pit_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: super_secret_jwt_key_change_in_production
+      # Bug corregido: este compose es para levantar todo en LOCAL (contraseña
+      # hardcodeada, puertos expuestos a localhost) — no para producción real
+      # (para eso está docker-compose.prod.yml, con secretos generados de
+      # verdad). Tenía NODE_ENV=production por error, lo que activa los
+      # chequeos fail-fast de producción (ADMIN_SECRET y ENCRYPTION_MASTER_KEY
+      # obligatorias) que este archivo nunca proveyó — el 'docker compose up'
+      # más básico para probar el proyecto ya rompía al mandar el primer
+      # mensaje. NODE_ENV=development usa las claves de desarrollo seguras
+      # (no aptas para producción, pero pensadas exactamente para esto).
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pit_network
+
+volumes:
+  pit_data:
+
+networks:
+  pit_network:

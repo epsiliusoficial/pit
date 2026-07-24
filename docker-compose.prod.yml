@@ -1,0 +1,86 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pit_db
+    environment:
+      POSTGRES_USER: pit_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: pit_db
+    volumes:
+      - pit_data:/var/lib/postgresql/data
+    networks:
+      - pit_network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: pit_cache
+    networks:
+      - pit_network
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: pit_backend
+    environment:
+      DATABASE_URL: postgresql://pit_user:${DB_PASSWORD}@postgres:5432/pit_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      NODE_ENV: production
+      # Bug crítico corregido: estas dos son OBLIGATORIAS en producción (el
+      # backend se niega a arrancar / revienta en la primera acción real sin
+      # ellas — ver core/crypto/messageEncryption.ts). Antes no se pasaban
+      # acá, así que aunque deploy.sh las generara en .env, nunca llegaban
+      # al contenedor.
+      ADMIN_SECRET: ${ADMIN_SECRET}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
+      # Opcionales: si no están en .env, quedan vacías y el backend usa sus
+      # defaults seguros (CORS abierto sin FRONTEND_URL, push notifications
+      # deshabilitadas sin claves VAPID, etc.) en vez de romperse.
+      FRONTEND_URL: ${FRONTEND_URL:-}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pit_network
+    restart: unless-stopped
+
+  # Nginx expone el backend al mundo (puerto 80/443) y maneja HTTPS real con Let's Encrypt.
+  # Esto es lo que hace que tu amigo, desde cualquier país, pueda conectarse a
+  # https://TUDOMINIO.com en vez de localhost:3000.
+  nginx:
+    image: nginx:alpine
+    container_name: pit_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    depends_on:
+      - backend
+    networks:
+      - pit_network
+    restart: unless-stopped
+
+  # Certbot genera y renueva el certificado SSL real y gratis de Let's Encrypt.
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+volumes:
+  pit_data:
+  certbot_certs:
+  certbot_www:
+
+networks:
+  pit_network:
