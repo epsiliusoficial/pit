@@ -1,0 +1,29 @@
+config:
+  target: "http://localhost:3000"
+  socketio:
+    transports: ["websocket"]
+    auth:
+      token: "{{ token }}"
+  engines:
+    socketio-v3: {}
+  phases:
+    - duration: 30
+      arrivalRate: 10
+      name: "Calentamiento"
+    - duration: 60
+      arrivalRate: 50
+      name: "Carga media (50 conexiones/seg)"
+    - duration: 60
+      arrivalRate: 150
+      name: "Carga alta (150 conexiones/seg) — punto de quiebre esperado"
+  processor: "./processor.js"
+
+scenarios:
+  - name: "Usuario real: conecta, entra a una sala, permanece conectado"
+    engine: socketio-v3
+    flow:
+      - function: "assignUser"
+      - emit:
+          channel: "join_room"
+          data: "{{ chatId }}"
+      - think: 20

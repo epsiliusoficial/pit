@@ -1,0 +1,352 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String     @id @default(cuid())
+  phone         String     @unique
+  name          String
+  bio           String?
+  statusText    String?    @default("Disponible")
+  avatarUrl     String?
+  publicKey     String     @map("public_key")
+  privateKeyEnc String     @map("private_key_enc")
+  passwordHash  String     @map("password_hash")
+  lastSeen      DateTime?
+  isOnline      Boolean    @default(false)
+  settings      Json       @default("{}")
+  tier          String     @default("FREE")
+  isVerified    Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  sentMessages  Message[]  @relation("Sender")
+  chats         ChatUser[]
+  gamesPlayer1  Game[]     @relation("Player1")
+  gamesPlayer2  Game[]     @relation("Player2")
+  reactions     Reaction[]
+  devices       Device[]
+  blockedBy     Block[]    @relation("Blocker")
+  blockedUsers  Block[]    @relation("Blocked")
+  pollVotes     PollVote[]
+}
+
+model Chat {
+  id          String           @id @default(cuid())
+  isGroup     Boolean          @default(false)
+  name        String?
+  groupConfig Json?
+  users       ChatUser[]
+  messages    Message[]
+  games       Game[]
+  polls       Poll[]
+  pinnedMsgId String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model ChatUser {
+  userId              String
+  user                User    @relation(fields: [userId], references: [id])
+  chatId              String
+  chat                Chat    @relation(fields: [chatId], references: [id])
+  role                String  @default("MEMBER")
+  isMuted             Boolean @default(false)
+  isArchived          Boolean @default(false)
+  isPinned            Boolean @default(false)
+  autoDeleteAfterRead Boolean @default(false)
+
+  @@id([userId, chatId])
+  @@index([chatId]) // la PK compuesta (userId, chatId) no sirve para buscar solo por chatId
+}
+
+model Message {
+  id            String     @id @default(cuid())
+  chatId        String
+  chat          Chat       @relation(fields: [chatId], references: [id])
+  senderId      String
+  sender        User       @relation("Sender", fields: [senderId], references: [id])
+  content       String
+  contentType   String     @default("TEXT")
+  metadata      Json?
+  isDeleted     Boolean    @default(false)
+  deletedAt     DateTime?
+  isEdited      Boolean    @default(false)
+  isEphemeral   Boolean    @default(false)
+  isStarred     Json?
+  expiresAt     DateTime?
+  forwardedFrom String?
+  replyToId     String?
+  mentions      Json?
+  readBy        Json?
+  reactions     Reaction[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Índices reales: chatId es el filtro más común de todo el sistema (historial,
+  // búsqueda, lista de chats); senderId se usa en rachas/logros y en "mis mensajes"
+  // del backup; isEphemeral+expiresAt acelera el worker de barrido que corre cada 10s.
+  @@index([chatId, createdAt])
+  @@index([senderId])
+  @@index([isEphemeral, expiresAt])
+  @@index([isDeleted, deletedAt])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId, emoji])
+}
+
+model Game {
+  id          String   @id @default(cuid())
+  chatId      String
+  chat        Chat     @relation(fields: [chatId], references: [id])
+  type        String
+  state       Json
+  player1Id   String
+  player1     User     @relation("Player1", fields: [player1Id], references: [id])
+  player2Id   String
+  player2     User     @relation("Player2", fields: [player2Id], references: [id])
+  currentTurn String
+  status      String   @default("ACTIVE")
+  winnerId    String?
+  moves       Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Sistema "Tareas Compartidas": to-do lists reales dentro de un chat, con
+// asignación a un miembro específico y fecha límite opcional.
+model Task {
+  id          String    @id @default(cuid())
+  chatId      String
+  title       String
+  description String?
+  assignedTo  String?
+  createdBy   String
+  isDone      Boolean   @default(false)
+  dueDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([chatId])
+}
+
+// Sistema "Auditoría": registro real de acciones sensibles (login, baneos,
+// cambios de admin, borrado de cuenta) — rastreable por usuario y por acción
+// para investigar incidentes reales, no un log genérico.
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  targetId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+}
+
+// Sistema "Bloqueo Biométrico (WebAuthn)": credenciales reales de Face ID/Touch ID/
+// Windows Hello/huella Android registradas vía el navegador. No es una simulación:
+// es el mismo protocolo estándar que usan bancos y Google.
+model WebAuthnCredential {
+  id           String   @id @default(cuid())
+  userId       String
+  credentialId String   @unique
+  publicKey    String
+  counter      Int      @default(0)
+  deviceLabel  String?
+  createdAt    DateTime @default(now())
+}
+
+// Sistema "Multi-Dispositivo": cada login desde un dispositivo distinto queda registrado,
+// y se puede revocar sesión remota (como "Dispositivos vinculados" de apps grandes).
+model Device {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  deviceName  String
+  userAgent   String?
+  lastActive  DateTime @default(now())
+  createdAt   DateTime @default(now())
+}
+
+// Sistema "Bloqueo de usuarios": real, no cosmético — se filtra en el envío.
+model Block {
+  id          String   @id @default(cuid())
+  blockerId   String
+  blocker     User     @relation("Blocker", fields: [blockerId], references: [id])
+  blockedId   String
+  blocked     User     @relation("Blocked", fields: [blockedId], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+}
+
+// Sistema "Encuestas ponderadas" (#51 de la idea original): votos reales por rol.
+model Poll {
+  id        String     @id @default(cuid())
+  chatId    String
+  chat      Chat       @relation(fields: [chatId], references: [id])
+  question  String
+  options   Json
+  createdBy String
+  closesAt  DateTime?
+  createdAt DateTime   @default(now())
+  votes     PollVote[]
+}
+
+model PollVote {
+  id           String @id @default(cuid())
+  pollId       String
+  poll         Poll   @relation(fields: [pollId], references: [id])
+  userId       String
+  user         User   @relation(fields: [userId], references: [id])
+  optionIndex  Int
+  weight       Float  @default(1)
+
+  @@unique([pollId, userId])
+}
+
+// Sistema "Mensajes programados": se guardan y un worker real los envía en el horario elegido.
+model ScheduledMessage {
+  id          String   @id @default(cuid())
+  chatId      String
+  senderId    String
+  content     String
+  sendAt      DateTime
+  sent        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  // El worker consulta esto cada 15 segundos; sin índice sería un full scan
+  // de la tabla completa cada vez, cada vez más lento a medida que crece.
+  @@index([sent, sendAt])
+}
+
+// Sistema "Logros/Gamificación": rachas e insignias reales, calculadas de verdad
+// contra la actividad del usuario, no un contador decorativo.
+model Achievement {
+  id         String   @id @default(cuid())
+  userId     String
+  code       String
+  unlockedAt DateTime @default(now())
+
+  @@unique([userId, code])
+}
+
+model UserStreak {
+  userId        String    @id
+  currentStreak Int       @default(0)
+  longestStreak Int       @default(0)
+  lastActiveDay DateTime?
+}
+
+// Sistema "Modo Concentración": silencia todo excepto una lista de contactos
+// favoritos, durante una ventana de tiempo programada. Real: se chequea antes
+// de emitir cualquier notificación push.
+model FocusMode {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  isEnabled      Boolean   @default(false)
+  allowedUserIds Json      @default("[]")
+  startsAt       DateTime?
+  endsAt         DateTime?
+}
+
+// Sistema "Canales dentro de un grupo" (tipo Discord): sub-espacios de un mismo Chat grupal.
+model Channel {
+  id        String   @id @default(cuid())
+  chatId    String
+  name      String
+  createdBy String
+  createdAt DateTime @default(now())
+
+  @@unique([chatId, name])
+}
+
+// Sistema "Pit Pay": saldo interno real en base de datos, con historial de transacciones.
+// No mueve dinero real todavía (eso requiere tus propias credenciales de Stripe/MercadoPago),
+// pero el sistema de saldo, transferencias y validaciones es 100% real y funcional.
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  balance   Float    @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model Transaction {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  amount     Float
+  note       String?
+  createdAt  DateTime @default(now())
+}
+
+// Sistema "Agenda de contactos": guardar personas con un alias propio, como en cualquier
+// app de mensajería (tu "Juan del trabajo" puede ser "Juan Pérez" para él).
+model Contact {
+  id        String   @id @default(cuid())
+  ownerId   String
+  contactId String
+  alias     String?
+  createdAt DateTime @default(now())
+
+  @@unique([ownerId, contactId])
+}
+
+// Sistema "Stickers": packs reales, no un mock — se envían como mensajes
+// contentType STICKER con la referencia al sticker usado.
+model StickerPack {
+  id        String    @id @default(cuid())
+  name      String
+  stickers  Sticker[]
+  createdAt DateTime  @default(now())
+}
+
+model Sticker {
+  id         String      @id @default(cuid())
+  packId     String
+  pack       StickerPack @relation(fields: [packId], references: [id])
+  emoji      String
+  imageUrl   String?
+  usageCount Int         @default(0)
+}
+
+// Sistema "Reportes/Denuncias": real, con estado y revisión de admin.
+model Report {
+  id           String   @id @default(cuid())
+  reporterId   String
+  reportedId   String
+  messageId    String?
+  reason       String
+  status       String   @default("PENDING") // PENDING, REVIEWED, DISMISSED
+  createdAt    DateTime @default(now())
+}
+
+// Sistema "Estados / Historias": contenido que se autodestruye a las 24hs, real,
+// con un worker de barrido (statusSweeper.ts) igual que los mensajes efímeros.
+model Status {
+  id        String   @id @default(cuid())
+  userId    String
+  content   String
+  mediaUrl  String?
+  viewedBy  Json?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}

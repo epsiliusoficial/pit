@@ -1,0 +1,2207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<title>Pit — Mensajería real</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#c98a4b" />
+<link rel="icon" href="/icon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl-js/1.0.3/nacl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root {
+    /* Sistema de diseño "Bóveda Tranquila": Pit no es un chat más — tiene
+       Panic PIN, Vault, Recuperación Social, Double Ratchet real. La
+       identidad visual tiene que sentirse como una caja fuerte bien hecha,
+       no como una app de mensajería genérica con verde menta sobre negro
+       (que es exactamente lo que traía antes). Tinta casi negra con un
+       toque cálido, acento en bronce — evoca metal de llave, no neón. */
+    --bg:#0e1013; --card:#181a1e; --card2:#212327; --accent:#c98a4b; --accent-dim:#9c6a35;
+    --text:#ece7e0; --muted:#8a8378; --danger:#d6604a; --radius:16px;
+    --font-display:'Fraunces', Georgia, serif; --font-body:'Inter', -apple-system,'Segoe UI',Roboto,sans-serif;
+  }
+  [data-theme="light"] {
+    --bg:#f3efe8; --card:#ffffff; --card2:#ece5d8; --text:#181614; --muted:#75695a;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    margin:0; font-family:var(--font-body); background:var(--bg);
+    color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden;
+    transition:background .2s, color .2s;
+  }
+  #login {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:100%; gap:14px; padding:24px; text-align:center;
+  }
+  .logo { width:72px; height:72px; border-radius:20px; background:linear-gradient(135deg,var(--accent),var(--accent-dim)); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:32px; font-weight:600; color:#100b06; margin-bottom:8px; box-shadow:0 8px 30px rgba(201,138,75,.3); }
+  h1 { font-family:var(--font-display); font-weight:600; font-size:30px; margin:0; letter-spacing:-0.3px; }
+  .tagline { color:var(--muted); font-size:14px; max-width:300px; margin:0 0 12px; }
+  #login input {
+    padding:15px 16px; border-radius:14px; border:1px solid rgba(138,131,120,.28);
+    background:var(--card); color:var(--text); font-size:16px; width:100%; max-width:320px; outline:none;
+  }
+  #login input:focus { border-color:var(--accent); }
+  .btn {
+    background:var(--accent); color:#100b06; border:none; border-radius:14px;
+    padding:15px 22px; font-weight:700; font-size:16px; cursor:pointer; width:100%; max-width:320px;
+    transition:transform .1s, opacity .2s;
+  }
+  .btn:active { transform:scale(.97); }
+  .btn:disabled { opacity:.5; }
+  #loginMsg { color:var(--muted); font-size:13px; min-height:18px; }
+  .badge-realtime { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--accent); background:rgba(201,138,75,.14); padding:6px 12px; border-radius:20px; margin-top:6px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  #app { display:none; flex-direction:column; height:100%; }
+  header.topbar {
+    display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
+    background:var(--card); border-bottom:1px solid rgba(138,131,120,.16); position:relative;
+  }
+  /* Firma visual: una costura fina bajo el header, como la junta de una
+     puerta de bóveda — el único lugar donde nos permitimos un detalle. */
+  header.topbar::after {
+    content:''; position:absolute; left:0; right:0; bottom:-3px; height:1px;
+    background:linear-gradient(90deg, transparent, var(--accent), transparent); opacity:.35;
+  }
+  header.topbar .title { font-family:var(--font-display); font-weight:600; font-size:19px; display:flex; align-items:center; gap:8px; }
+  .icon-btn { background:none; border:none; color:var(--text); font-size:18px; cursor:pointer; padding:8px; border-radius:10px; }
+  .icon-btn:hover { background:var(--card2); }
+
+  #messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; scroll-behavior:smooth; }
+  .msg-row { display:flex; flex-direction:column; max-width:78%; }
+  .msg-row.mine { align-self:flex-end; align-items:flex-end; }
+  .bubble {
+    padding:11px 15px; border-radius:18px; background:var(--card); position:relative;
+    word-wrap:break-word; font-size:15px; line-height:1.45; box-shadow:0 1px 2px rgba(0,0,0,.2);
+  }
+  .mine .bubble { background:var(--accent); color:#100b06; border-bottom-right-radius:6px; }
+  .msg-row:not(.mine) .bubble { border-bottom-left-radius:6px; }
+  .meta-row { display:flex; gap:6px; align-items:center; margin-top:3px; font-size:11px; color:var(--muted); }
+  .edited-tag { font-style:italic; opacity:.7; }
+  .reactions-row { display:flex; gap:4px; margin-top:4px; flex-wrap:wrap; }
+  .reaction-chip { background:var(--card2); border-radius:12px; padding:2px 8px; font-size:12px; }
+  .msg-actions { display:none; gap:4px; margin-top:4px; }
+  .msg-row:hover .msg-actions { display:flex; }
+  .msg-actions button { background:var(--card2); border:none; color:var(--muted); font-size:11px; padding:4px 8px; border-radius:8px; cursor:pointer; }
+
+  #typingIndicator { padding:0 16px 6px; font-size:12px; color:var(--accent); min-height:16px; }
+
+  #composer { display:flex; gap:8px; padding:12px; background:var(--card); align-items:flex-end; }
+  #composer textarea {
+    flex:1; padding:13px 16px; border-radius:20px; border:none; background:var(--card2);
+    color:var(--text); font-size:15px; resize:none; max-height:100px; font-family:inherit; outline:none;
+  }
+  #composer button.send {
+    background:var(--accent); color:#100b06; border:none; width:46px; height:46px; border-radius:50%;
+    font-size:18px; cursor:pointer; flex-shrink:0;
+  }
+  #composer button.icon { background:var(--card2); border:none; width:46px; height:46px; border-radius:50%; color:var(--text); font-size:16px; cursor:pointer; flex-shrink:0; }
+
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(8,7,5,.6); z-index:50; align-items:flex-end; justify-content:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:var(--card); width:100%; max-width:480px; border-radius:20px 20px 0 0; padding:20px; max-height:80vh; overflow-y:auto; position:relative; }
+  .modal h3 { margin-top:0; font-family:var(--font-display); font-weight:600; font-size:21px; }
+  .modal input { width:100%; padding:13px; border-radius:12px; border:1px solid rgba(138,131,120,.28); background:var(--card2); color:var(--text); margin-bottom:10px; font-size:15px; }
+  .chip-row { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .emoji-chip { font-size:22px; background:var(--card2); border:none; border-radius:12px; padding:6px 10px; cursor:pointer; }
+  .close-modal { position:absolute; top:14px; right:16px; background:none; border:none; color:var(--muted); font-size:20px; cursor:pointer; }
+
+  /* --- TOASTS --- */
+  #toastContainer { position:fixed; bottom:90px; left:50%; transform:translateX(-50%); z-index:100; display:flex; flex-direction:column; gap:8px; align-items:center; pointer-events:none; }
+  .toast {
+    background:var(--card2); color:var(--text); padding:12px 18px; border-radius:14px; font-size:14px;
+    box-shadow:0 4px 20px rgba(0,0,0,.35); opacity:0; transform:translateY(10px); transition:opacity .25s, transform .25s;
+    max-width:90vw; display:flex; align-items:center; gap:8px;
+  }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast.error { background:var(--danger); color:#fff; }
+  .toast.success { background:var(--accent); color:#100b06; }
+
+  /* --- SKELETON LOADING --- */
+  .skeleton-row { display:flex; flex-direction:column; gap:6px; max-width:60%; }
+  .skeleton-row.mine { align-self:flex-end; align-items:flex-end; }
+  .skeleton-bubble {
+    height:38px; border-radius:18px; background:linear-gradient(90deg, var(--card2) 25%, rgba(138,131,120,.18) 50%, var(--card2) 75%);
+    background-size:200% 100%; animation:shimmer 1.4s infinite;
+  }
+  @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+
+  /* --- CONNECTION STATUS --- */
+  #connectionBanner {
+    display:none; text-align:center; font-size:12px; padding:6px; background:var(--danger); color:#fff;
+  }
+  #connectionBanner.show { display:block; }
+
+  /* --- CONFIRM DIALOG --- */
+  #confirmOverlay { display:none; position:fixed; inset:0; background:rgba(8,7,5,.65); z-index:200; align-items:center; justify-content:center; }
+  #confirmOverlay.open { display:flex; }
+  #confirmBox { background:var(--card); border-radius:18px; padding:22px; max-width:320px; text-align:center; }
+  #confirmBox p { margin:0 0 18px; font-size:15px; }
+  #confirmBox .confirm-actions { display:flex; gap:10px; }
+  #confirmBox button { flex:1; padding:12px; border-radius:12px; border:none; font-weight:700; cursor:pointer; font-size:14px; }
+  #confirmBox .confirm-yes { background:var(--danger); color:#fff; }
+  #confirmBox .confirm-no { background:var(--card2); color:var(--text); }
+
+  /* --- LINK SAFETY --- */
+  .link-preview-card { margin-top:6px; border-radius:12px; overflow:hidden; border:1px solid rgba(138,131,120,.25); max-width:260px; }
+  .link-preview-card img { width:100%; max-height:120px; object-fit:cover; display:block; }
+  .link-preview-body { padding:8px 10px; background:var(--card2); }
+  .link-preview-body .lp-title { font-size:13px; font-weight:700; margin-bottom:2px; }
+  .link-preview-body .lp-desc { font-size:12px; color:var(--muted); }
+  .link-warning { margin-top:6px; padding:10px 12px; border-radius:12px; background:rgba(214,96,74,.14); border:1px solid var(--danger); max-width:280px; }
+  .link-warning .lw-title { color:var(--danger); font-weight:700; font-size:13px; margin-bottom:4px; }
+  .link-warning ul { margin:4px 0 0; padding-left:18px; font-size:12px; color:var(--text); }
+</style>
+</head>
+<body data-theme="dark">
+  <div id="connectionBanner">⚠️ Reconectando...</div>
+  <div id="toastContainer"></div>
+
+  <div id="confirmOverlay">
+    <div id="confirmBox">
+      <p id="confirmMessage">¿Estás seguro?</p>
+      <div class="confirm-actions">
+        <button class="confirm-no" onclick="resolveConfirm(false)">Cancelar</button>
+        <button class="confirm-yes" onclick="resolveConfirm(true)">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="login">
+    <div class="logo">P</div>
+    <h1>Pit</h1>
+    <p class="tagline">Mensajería cifrada de verdad. Rápida, simple, sin instalar nada.</p>
+    <input id="serverInput" placeholder="Servidor: https://tudominio.com" />
+    <input id="phoneInput" placeholder="Tu número, ej +5490000000" />
+    <input id="passInput" type="password" placeholder="Contraseña" />
+    <input id="nameInput" placeholder="Tu nombre (solo primera vez)" />
+    <button class="btn" onclick="loginFlow()" id="loginBtn">Entrar a Pit</button>
+    <p id="loginMsg"></p>
+    <div class="badge-realtime"><span class="dot"></span> Conexión cifrada de extremo a extremo</div>
+  </div>
+
+  <div id="app">
+    <header class="topbar">
+      <div class="title">💬 <span id="chatTitle">Pit</span> <button onclick="openSafetyNumberModal()" title="Verificar código de seguridad">🔒</button> <button onclick="openSearchModal()" title="Buscar en mis mensajes">🔍</button></div>
+      <div>
+        <button class="icon-btn" onclick="startCall('audio')" title="Llamada de audio">📞</button>
+        <button class="icon-btn" onclick="startCall('video')" title="Videollamada grupal">🎥</button>
+        <button class="icon-btn" onclick="openModal('locationModal')" title="Compartir ubicación en vivo">📍</button>
+        <button class="icon-btn" onclick="toggleTheme()" title="Cambiar tema">🌓</button>
+        <button class="icon-btn" onclick="openModal('searchModal')" title="Buscar">🔎</button>
+        <button class="icon-btn" onclick="openPinsModal()" title="Mensajes fijados">📌</button>
+        <button class="icon-btn" onclick="openFoldersModal()" title="Carpetas">🗂️</button>
+        <button class="icon-btn" onclick="openProfileModal()" title="Perfil">👤</button>
+      </div>
+    </header>
+
+    <div id="messages"></div>
+    <div id="typingIndicator"></div>
+    <div id="smartReplyRow" class="chip-row" style="display:none; padding:0 12px;"></div>
+    <div id="replyPreview" style="display:none; align-items:center; gap:8px; padding:6px 12px; background:var(--card2); font-size:13px;">
+      <span style="flex:1; opacity:.8;">Respondiendo a: <span id="replyPreviewText"></span></span>
+      <button class="icon" onclick="cancelReply()">✕</button>
+    </div>
+
+    <div id="composer">
+      <button class="icon" onclick="openModal('ephemeralModal')" title="Mensaje que se autodestruye">⏱️</button>
+      <button class="icon" onclick="openModal('eventModal')" title="Crear evento">📅</button>
+      <button class="icon" id="voiceBtn" onclick="toggleVoiceRecording()" title="Nota de voz">🎤</button>
+      <textarea id="msgInput" placeholder="Escribí un mensaje..." rows="1" onkeydown="handleKey(event)"></textarea>
+      <button class="send" onclick="send()">➤</button>
+    </div>
+
+    <div class="modal-overlay" id="threadModal">
+      <div class="modal">
+        <button class="close-modal" onclick="closeModal('threadModal')">✕</button>
+        <h3 id="threadModalTitle">Hilo</h3>
+        <div id="threadReplies" style="text-align:left; margin-top:10px; max-height:50vh; overflow-y:auto;"></div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="pinsModal">
+      <div class="modal">
+        <button class="close-modal" onclick="closeModal('pinsModal')">✕</button>
+        <h3>📌 Mensajes fijados</h3>
+        <div id="pinsList" style="text-align:left; margin-top:10px; max-height:50vh; overflow-y:auto;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="chatModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('chatModal')">✕</button>
+      <h3>Entrar a un chat</h3>
+      <input id="chatIdInput" placeholder="ID de chat existente" />
+      <button class="btn" onclick="joinChat()">Entrar</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="searchModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('searchModal')">✕</button>
+      <h3>Buscar</h3>
+      <div class="chip-row">
+        <button class="emoji-chip" style="font-size:13px" id="searchScopeChatBtn" onclick="setSearchScope('chat')">Este chat</button>
+        <button class="emoji-chip" style="font-size:13px" id="searchScopeGlobalBtn" onclick="setSearchScope('global')">Todos mis chats</button>
+      </div>
+      <input id="searchInput" placeholder="Escribí para buscar..." onkeydown="if(event.key==='Enter') doSearch()" />
+      <button class="btn" onclick="doSearch()">Buscar</button>
+      <div id="searchResults"></div>
+    </div>
+  </div>
+
+  <!-- Sistema "Carpetas de Chats": organización personal sobre modules/chat/folders.ts -->
+  <div class="modal-overlay" id="foldersModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('foldersModal')">✕</button>
+      <h3>Mis carpetas</h3>
+      <div id="foldersList" style="text-align:left; margin:10px 0;"></div>
+      <input id="newFolderName" placeholder="Nombre de carpeta nueva..." />
+      <button class="btn" onclick="createFolder()">Crear carpeta</button>
+      <p style="font-size:12px; color:var(--muted); margin-top:10px;">
+        Para sumar el chat que tenés abierto a una carpeta, tocá su nombre en la lista.
+      </p>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="profileModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('profileModal')">✕</button>
+      <h3>Tu perfil</h3>
+      <input id="profileName" placeholder="Nombre" />
+      <input id="profileBio" placeholder="Bio" />
+      <button class="btn" onclick="saveProfile()">Guardar</button>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid rgba(138,131,120,.18);">
+        <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+          🔒 Bloqueo biométrico real (Face ID / huella / Windows Hello, según tu dispositivo)
+        </p>
+        <button class="btn" onclick="setupBiometric()" id="biometricBtn">Activar biometría</button>
+      </div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid rgba(138,131,120,.18);">
+        <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+          🌴 Auto-respuesta (modo ausente): le contesta sola a quien te escriba por primera vez.
+        </p>
+        <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+          <input type="checkbox" id="autoReplyEnabled" /> Activar auto-respuesta
+        </label>
+        <textarea id="autoReplyMessage" rows="2" placeholder="Ej: Estoy de vacaciones hasta el 5, te contesto cuando vuelva"></textarea>
+        <button class="btn" onclick="saveAutoReply()">Guardar auto-respuesta</button>
+      </div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid rgba(138,131,120,.18);">
+        <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+          📱 Vincular otro dispositivo (tu historial viaja cifrado, el servidor nunca ve tu clave)
+        </p>
+        <button class="btn" onclick="openDeviceLinkModal()">Vincular un dispositivo</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="deviceLinkModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('deviceLinkModal')">✕</button>
+      <h3>Vincular dispositivo</h3>
+      <div id="deviceLinkStep_new">
+        <p style="font-size:13px; color:var(--muted);">
+          Este dispositivo TODAVÍA NO tiene tu historial. Mostrá este código en tu otro dispositivo
+          (donde ya usás Pit) para traer tu clave real — nunca pasa por el servidor en claro.
+        </p>
+        <div id="deviceLinkQr" style="display:flex; justify-content:center; margin:14px 0;"></div>
+        <p style="font-size:11px; color:var(--muted); text-align:center;">O pegá este código a mano del otro lado:</p>
+        <textarea id="deviceLinkCodeOut" rows="3" readonly style="font-size:11px;"></textarea>
+        <p id="deviceLinkStatus" style="font-size:12px; color:var(--muted); margin-top:8px;">Esperando confirmación del otro dispositivo…</p>
+      </div>
+      <div id="deviceLinkStep_existing" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid rgba(138,131,120,.18);">
+        <p style="font-size:13px; color:var(--muted);">¿Ya tenés Pit acá y querés vincular OTRO dispositivo? Pegá el código que te muestra:</p>
+        <textarea id="deviceLinkCodeIn" rows="3" placeholder="Pegá acá el código del dispositivo nuevo"></textarea>
+        <button class="btn" onclick="confirmDeviceLink()">Confirmar vínculo</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="safetyNumberModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('safetyNumberModal')">✕</button>
+      <h3>Código de seguridad</h3>
+      <p style="font-size:13px; color:var(--muted);">
+        Compará estos números en persona o por otro medio (llamada, otro chat) con
+        <span id="safetyNumberOtherName">la otra persona</span>. Si coinciden de los dos lados,
+        no hay nadie en el medio de la conversación.
+      </p>
+      <div id="safetyNumberAlert" style="display:none; padding:10px; border-radius:8px; background:rgba(214,96,74,.15); color:var(--danger); font-size:13px; margin-bottom:10px;">
+        ⚠️ Este código cambió desde la última vez que lo verificaste — puede ser que la otra
+        persona reinstaló la app, o puede ser una señal de alerta real. Confirmá por otro medio antes de verificar de nuevo.
+      </div>
+      <div id="safetyNumberCode" style="font-family:monospace; font-size:15px; text-align:center; letter-spacing:1px; padding:14px; background:rgba(138,131,120,.1); border-radius:8px; margin:10px 0;">
+        Cargando…
+      </div>
+      <div id="safetyNumberVerifiedTag" style="display:none; font-size:12px; color:var(--accent); text-align:center; margin-bottom:10px;">✅ Ya verificado</div>
+      <button class="btn" onclick="verifySafetyNumber()">Marcar como verificado</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="searchModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('searchModal')">✕</button>
+      <h3>Buscar en tus mensajes</h3>
+      <p style="font-size:12px; color:var(--muted);">
+        Busca solo entre los mensajes que ya viste en este dispositivo (con E2E real, el servidor
+        no puede indexar tu historial completo por vos).
+      </p>
+      <input id="searchQueryInput" placeholder="Escribí algo…" oninput="runClientSearch()" style="width:100%; margin:10px 0;" />
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin-bottom:8px;">
+        <input type="checkbox" id="searchOnlyCurrentChat" onchange="runClientSearch()" /> Solo en este chat
+      </label>
+      <div id="searchResults" style="max-height:300px; overflow-y:auto;"></div>
+    </div>
+  </div>
+
+
+  <div class="modal-overlay" id="ephemeralModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('ephemeralModal')">✕</button>
+      <h3>Mensaje que se autodestruye ⏱️</h3>
+      <input id="ephemeralContent" placeholder="Tu mensaje" />
+      <div class="chip-row">
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(10)">10s</button>
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(60)">1 min</button>
+        <button class="emoji-chip" style="font-size:14px" onclick="sendEphemeral(3600)">1 hora</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="reactModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('reactModal')">✕</button>
+      <h3>Reaccionar</h3>
+      <div class="chip-row">
+        <button class="emoji-chip" onclick="reactTo('❤️')">❤️</button>
+        <button class="emoji-chip" onclick="reactTo('😂')">😂</button>
+        <button class="emoji-chip" onclick="reactTo('😮')">😮</button>
+        <button class="emoji-chip" onclick="reactTo('👍')">👍</button>
+        <button class="emoji-chip" onclick="reactTo('🔥')">🔥</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sistema "Llamadas Grupales": UI real sobre modules/calls/groupCalls.ts.
+       Grilla dinámica: se agrega/saca un <video> por cada peer que entra o
+       sale de la llamada. Mesh WebRTC — cada video corresponde a una conexión
+       P2P directa distinta, no hay servidor de media en el medio. -->
+  <!-- Sistema "Ubicación en Vivo": compartir tu posición real (geolocalización
+       del navegador) por tiempo acotado. Sin mapa embebido pesado — cada punto
+       recibido se muestra como un link directo a OpenStreetMap con esas
+       coordenadas, liviano y sin depender de una API key de mapas externa. -->
+  <div class="modal-overlay" id="eventModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('eventModal')">✕</button>
+      <h3>Crear evento</h3>
+      <input id="eventTitle" placeholder="Título (ej: Asado, Cumple de Ana)" />
+      <input id="eventDate" type="datetime-local" />
+      <input id="eventLocation" placeholder="Lugar (opcional)" />
+      <button class="btn" onclick="createEvent()">Crear</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="locationModal">
+    <div class="modal">
+      <button class="close-modal" onclick="closeModal('locationModal')">✕</button>
+      <h3>Ubicación en vivo</h3>
+      <div id="locationIdle">
+        <p style="color:var(--muted); font-size:14px;">Compartí tu posición en tiempo real con este chat por un tiempo limitado.</p>
+        <div class="chip-row">
+          <button class="emoji-chip" onclick="startLocationShare(900)">15 min</button>
+          <button class="emoji-chip" onclick="startLocationShare(3600)">1 hora</button>
+          <button class="emoji-chip" onclick="startLocationShare(28800)">8 horas</button>
+        </div>
+      </div>
+      <div id="locationActive" style="display:none;">
+        <p>📍 Compartiendo — se corta en <span id="locationCountdown">--:--</span></p>
+        <button class="emoji-chip" style="background:var(--danger); color:#fff;" onclick="stopLocationShare()">Dejar de compartir</button>
+      </div>
+      <div id="liveLocationList" style="margin-top:14px; text-align:left;"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="callModal">
+    <div class="modal" style="max-width:640px; width:92vw;">
+      <button class="close-modal" onclick="hangUp()">✕</button>
+      <h3 id="callStatus">Conectando llamada...</h3>
+      <div id="callGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); gap:8px; margin:14px 0;"></div>
+      <div class="chip-row">
+        <button class="emoji-chip" onclick="toggleMic()" id="micBtn">🎙️ Mic</button>
+        <button class="emoji-chip" onclick="toggleCam()" id="camBtn">📷 Cámara</button>
+        <button class="emoji-chip" style="background:var(--danger); color:#fff;" onclick="hangUp()">📴 Colgar</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  let SERVER = '', token = '', myUserId = '', socket = null, currentChatId = '';
+  let reactingToMessageId = null;
+  const messagesById = {};
+
+  // --- Estado de la llamada grupal en curso (mesh WebRTC) ---
+  let localStream = null;
+  const peerConnections = {}; // userId -> RTCPeerConnection
+  let inCall = false;
+  const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]; // STUN público solo para descubrir la IP propia; el media es P2P directo
+
+  function videoElId(userId) { return 'callvid_' + userId; }
+
+  function ensureVideoTile(userId, isLocal) {
+    if (document.getElementById(videoElId(userId))) return document.getElementById(videoElId(userId));
+    const wrap = document.createElement('div');
+    wrap.id = 'calltile_' + userId;
+    wrap.style.cssText = 'position:relative; background:#000; border-radius:12px; overflow:hidden; aspect-ratio:4/3; transition:box-shadow .15s;';
+    const vid = document.createElement('video');
+    vid.id = videoElId(userId);
+    vid.autoplay = true; vid.playsInline = true;
+    if (isLocal) vid.muted = true;
+    vid.style.cssText = 'width:100%; height:100%; object-fit:cover;';
+    const label = document.createElement('span');
+    label.textContent = isLocal ? 'Vos' : userId.slice(0, 8);
+    label.style.cssText = 'position:absolute; bottom:4px; left:6px; font-size:11px; background:rgba(0,0,0,.5); padding:2px 8px; border-radius:8px; color:#fff;';
+    wrap.appendChild(vid); wrap.appendChild(label);
+    document.getElementById('callGrid').appendChild(wrap);
+    return vid;
+  }
+
+  function setSpeaking(userId, speaking) {
+    const tile = document.getElementById('calltile_' + userId);
+    if (tile) tile.style.boxShadow = speaking ? '0 0 0 3px var(--accent)' : 'none';
+  }
+
+  // Sistema "Quién está hablando": mide el volumen real del audio de cada
+  // stream (local y remoto) con Web Audio API, no un mock ni un ícono fijo.
+  // Un stream por encima del umbral por al menos un par de frames se marca
+  // como "hablando" con un aro verde en su tile.
+  const speakingAnalysers = {}; // userId -> { audioCtx, analyser, rafId }
+
+  function watchSpeaking(userId, stream) {
+    if (speakingAnalysers[userId]) return; // ya se está midiendo
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) return;
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let speakingFrames = 0;
+    let rafId;
+
+    function tick() {
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / data.length;
+      const isSpeaking = avg > 12; // umbral empírico, filtra ruido de fondo bajo
+      speakingFrames = isSpeaking ? Math.min(speakingFrames + 1, 5) : Math.max(speakingFrames - 1, 0);
+      setSpeaking(userId, speakingFrames >= 2);
+      rafId = requestAnimationFrame(tick);
+    }
+    tick();
+    speakingAnalysers[userId] = { audioCtx, rafId };
+  }
+
+  function stopWatchingSpeaking(userId) {
+    const entry = speakingAnalysers[userId];
+    if (!entry) return;
+    cancelAnimationFrame(entry.rafId);
+    entry.audioCtx.close().catch(() => {});
+    delete speakingAnalysers[userId];
+    setSpeaking(userId, false);
+  }
+
+  function removeVideoTile(userId) {
+    stopWatchingSpeaking(userId);
+    const vid = document.getElementById(videoElId(userId));
+    if (vid && vid.parentElement) vid.parentElement.remove();
+  }
+
+  function createPeerConnection(peerUserId, callType) {
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit('group_call_ice_candidate', { chatId: currentChatId, toUserId: peerUserId, candidate: e.candidate });
+      }
+    };
+    pc.ontrack = (e) => {
+      const vid = ensureVideoTile(peerUserId, false);
+      if (vid.srcObject !== e.streams[0]) vid.srcObject = e.streams[0];
+      watchSpeaking(peerUserId, e.streams[0]);
+    };
+    // Sistema "Reconexión automática": si la red se corta un momento (wifi
+    // que titila, cambio de wifi a datos), en vez de dejar el tile del peer
+    // congelado para siempre, se intenta un ICE restart real (renegociación
+    // con `iceRestart:true`) unas pocas veces antes de rendirse y sacar el
+    // tile — igual que hace cualquier app de videollamada seria.
+    let reconnectAttempts = 0;
+    pc.onconnectionstatechange = async () => {
+      if (pc.connectionState === 'connected') {
+        reconnectAttempts = 0;
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (reconnectAttempts >= 3) {
+          logCallEvent(`${peerUserId.slice(0,8)} se desconectó — no se pudo restablecer la llamada con esa persona`);
+          if (peerConnections[peerUserId] === pc) { pc.close(); delete peerConnections[peerUserId]; }
+          removeVideoTile(peerUserId);
+          return;
+        }
+        reconnectAttempts++;
+        try {
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          socket.emit('group_call_offer', { chatId: currentChatId, toUserId: peerUserId, sdp: offer });
+        } catch (e) { /* si falla el restart, el próximo statechange lo reintenta o abandona */ }
+      }
+    };
+    peerConnections[peerUserId] = pc;
+    return pc;
+  }
+
+  function logCallEvent(text) {
+    const status = document.getElementById('callStatus');
+    if (status) status.textContent = text;
+  }
+
+  async function startCall(callType) {
+    if (!currentChatId) { alert('Entrá a un chat primero'); return; }
+    if (inCall) { openModal('callModal'); return; }
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: callType === 'video'
+      });
+    } catch (err) {
+      alert('No se pudo acceder a cámara/micrófono: ' + err.message);
+      return;
+    }
+    inCall = true;
+    document.getElementById('callGrid').innerHTML = '';
+    ensureVideoTile(myUserId, true).srcObject = localStream;
+    watchSpeaking(myUserId, localStream);
+    document.getElementById('callStatus').textContent = 'En llamada...';
+    openModal('callModal');
+    socket.emit('group_call_join', { chatId: currentChatId, callType });
+  }
+
+  function registerCallSocketListeners() {
+    // Alguien más ya está en una llamada de este chat y nos avisa al conectar
+    // a la sala (join_room) — mostramos un aviso simple sin autoiniciar cámara.
+    socket.on('group_call_joined', async ({ chatId, callType, peers }) => {
+      if (chatId !== currentChatId) return;
+      document.getElementById('callStatus').textContent = `En llamada (${peers.length + 1} participantes)`;
+      // A cada peer que ya estaba, le mandamos nosotros la oferta.
+      for (const peerId of peers) {
+        const pc = createPeerConnection(peerId, callType);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('group_call_offer', { chatId: currentChatId, toUserId: peerId, sdp: offer });
+      }
+    });
+
+    socket.on('group_call_peer_joined', ({ chatId, userId }) => {
+      if (chatId !== currentChatId || !inCall) return;
+      // No creamos PC acá: el que entra nos manda su offer (evita offers duplicadas cruzadas).
+      document.getElementById('callStatus').textContent = 'En llamada...';
+    });
+
+    socket.on('group_call_offer', async ({ chatId, fromUserId, sdp }) => {
+      if (chatId !== currentChatId || !inCall) return;
+      let pc = peerConnections[fromUserId];
+      if (!pc) pc = createPeerConnection(fromUserId, 'video');
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('group_call_answer', { chatId: currentChatId, toUserId: fromUserId, sdp: answer });
+    });
+
+    socket.on('group_call_answer', async ({ fromUserId, sdp }) => {
+      const pc = peerConnections[fromUserId];
+      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    });
+
+    socket.on('group_call_ice_candidate', async ({ fromUserId, candidate }) => {
+      const pc = peerConnections[fromUserId];
+      if (pc && candidate) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { /* candidato tardío, se ignora */ }
+      }
+    });
+
+    socket.on('group_call_peer_left', ({ userId }) => {
+      if (peerConnections[userId]) { peerConnections[userId].close(); delete peerConnections[userId]; }
+      removeVideoTile(userId);
+    });
+
+    socket.on('call_error', ({ error }) => {
+      alert('Llamada: ' + error);
+    });
+  }
+
+  function toggleMic() {
+    if (!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if (track) { track.enabled = !track.enabled; document.getElementById('micBtn').style.opacity = track.enabled ? 1 : .4; }
+  }
+
+  function toggleCam() {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (track) { track.enabled = !track.enabled; document.getElementById('camBtn').style.opacity = track.enabled ? 1 : .4; }
+  }
+
+  function hangUp() {
+    if (inCall) socket.emit('group_call_leave', { chatId: currentChatId });
+    Object.values(peerConnections).forEach((pc) => pc.close());
+    Object.keys(peerConnections).forEach((k) => delete peerConnections[k]);
+    Object.keys(speakingAnalysers).forEach((userId) => stopWatchingSpeaking(userId));
+    if (localStream) localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+    inCall = false;
+    closeModal('callModal');
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  function toggleTheme() {
+    const body = document.body;
+    const next = body.dataset.theme === 'dark' ? 'light' : 'dark';
+    body.dataset.theme = next;
+    localStorage.setItem('pit-theme', next);
+  }
+  document.body.dataset.theme = localStorage.getItem('pit-theme') || 'dark';
+
+  function openModal(id) { document.getElementById(id).classList.add('open'); }
+  function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+  // Sistema "Toasts": notificaciones no bloqueantes en vez de alert().
+  function showToast(message, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 300);
+    }, 3000);
+  }
+
+  // Sistema "Confirmaciones": modal real en vez de confirm() del navegador,
+  // devuelve una Promise<boolean> para poder usar await donde antes iba confirm().
+  let _confirmResolver = null;
+  function askConfirm(message) {
+    document.getElementById('confirmMessage').textContent = message;
+    openModal('confirmOverlay');
+    return new Promise((resolve) => { _confirmResolver = resolve; });
+  }
+  function resolveConfirm(value) {
+    closeModal('confirmOverlay');
+    if (_confirmResolver) _confirmResolver(value);
+    _confirmResolver = null;
+  }
+
+  // Sistema "Skeleton Loading": placeholders animados mientras carga el historial.
+  function showSkeletons(count = 5) {
+    const container = document.getElementById('messages');
+    container.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const row = document.createElement('div');
+      row.className = 'skeleton-row' + (i % 2 === 0 ? '' : ' mine');
+      row.innerHTML = `<div class="skeleton-bubble" style="width:${120 + (i % 3) * 40}px"></div>`;
+      container.appendChild(row);
+    }
+  }
+
+  async function loginFlow() {
+    SERVER = document.getElementById('serverInput').value.replace(/\/$/, '');
+    const phone = document.getElementById('phoneInput').value.trim();
+    const password = document.getElementById('passInput').value;
+    const name = document.getElementById('nameInput').value.trim();
+    const msgEl = document.getElementById('loginMsg');
+    const btn = document.getElementById('loginBtn');
+
+    if (!SERVER || !phone || !password) { msgEl.textContent = 'Completá servidor, teléfono y contraseña.'; return; }
+    btn.disabled = true;
+    try {
+      msgEl.textContent = 'Pidiendo código...';
+      const otpResp = await fetch(`${SERVER}/api/auth/otp/request`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+      }).then(r => r.json());
+
+      let otp = otpResp.devOtp || prompt('Ingresá el código OTP que te llegó por SMS:');
+
+      // Sistema "Claves generadas en el cliente" (fix de auditoría de seguridad):
+      // ANTES, el servidor generaba el par de claves completo (pública Y privada)
+      // en el registro y guardaba la privada en su propia base de datos — es decir,
+      // el "cifrado E2E" era falso: el server siempre tuvo la llave para leer todo.
+      // Ahora el par se genera ACÁ, en el navegador, con una librería real y
+      // auditada (TweetNaCl, box.keyPair = X25519). La clave privada nunca se
+      // manda al servidor — solo viaja la pública. Se guarda localmente para
+      // poder usarla en próximas sesiones.
+      let privateKeyB64 = localStorage.getItem('pit_e2e_privkey');
+      let publicKeyB64;
+      if (!privateKeyB64) {
+        const kp = nacl.box.keyPair();
+        privateKeyB64 = nacl.util ? nacl.util.encodeBase64(kp.secretKey) : btoa(String.fromCharCode(...kp.secretKey));
+        publicKeyB64 = nacl.util ? nacl.util.encodeBase64(kp.publicKey) : btoa(String.fromCharCode(...kp.publicKey));
+        localStorage.setItem('pit_e2e_privkey', privateKeyB64);
+        localStorage.setItem('pit_e2e_pubkey', publicKeyB64);
+      } else {
+        publicKeyB64 = localStorage.getItem('pit_e2e_pubkey');
+      }
+
+      const authResp = await fetch(`${SERVER}/api/auth/otp/verify`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ phone, otp, name, password, publicKey: publicKeyB64 })
+      }).then(r => r.json());
+
+      if (authResp.error) { msgEl.textContent = authResp.error; btn.disabled = false; return; }
+
+      token = authResp.token;
+      myUserId = authResp.user.id;
+      connectSocket();
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      openModal('chatModal');
+    } catch (e) {
+      msgEl.textContent = 'Error de conexión: ' + e.message;
+      btn.disabled = false;
+    }
+  }
+
+  function connectSocket() {
+    socket = io(SERVER, {
+      auth: { token },
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
+    });
+
+    socket.on('connect', () => {
+      document.getElementById('connectionBanner').classList.remove('show');
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('connectionBanner').classList.add('show');
+    });
+    socket.on('reconnect_attempt', () => {
+      document.getElementById('connectionBanner').classList.add('show');
+    });
+    socket.on('reconnect', () => {
+      document.getElementById('connectionBanner').classList.remove('show');
+      showToast('Conexión restablecida', 'success');
+      if (currentChatId) socket.emit('join_room', currentChatId); // vuelve a unirse al room tras reconectar
+    });
+    socket.on('connect_error', (err) => {
+      showToast('Error de conexión: ' + err.message, 'error');
+    });
+
+    socket.on('new_message', async (msg) => {
+      await renderMessage(msg);
+      // Sistema "Respuestas Rápidas Inteligentes": solo se piden cuando el
+      // mensaje nuevo es de OTRA persona (no tiene sentido sugerirte respuestas
+      // a tu propio mensaje) y del chat que tenés abierto ahora mismo.
+      if (msg.senderId !== myUserId && msg.chatId === currentChatId) {
+        fetchSmartReplies();
+      }
+    });
+    socket.on('message_edited', (msg) => updateMessageEl(msg));
+    socket.on('message_deleted', ({ id }) => { const el = document.getElementById('m_'+id); if (el) el.remove(); });
+    socket.on('reaction_update', ({ messageId, reactions }) => renderReactions(messageId, reactions));
+    registerCallSocketListeners();
+    registerLocationSocketListeners();
+    socket.on('user_typing', () => {
+      document.getElementById('typingIndicator').textContent = 'escribiendo...';
+      clearTimeout(window._typingTimeout);
+      window._typingTimeout = setTimeout(() => { document.getElementById('typingIndicator').textContent = ''; }, 2000);
+    });
+  }
+
+  let oldestLoadedId = null;
+  let hasMoreHistory = false;
+
+  async function fetchSmartReplies() {
+    try {
+      const { suggestions } = await fetch(`${SERVER}/api/ai/smart-replies/${currentChatId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+      const row = document.getElementById('smartReplyRow');
+      if (!suggestions || !suggestions.length) { row.style.display = 'none'; row.innerHTML = ''; return; }
+      row.innerHTML = suggestions.map(s =>
+        `<button class="emoji-chip" style="font-size:13px" onclick="useSmartReply(this)">${escapeHtml(s)}</button>`
+      ).join('');
+      row.style.display = 'flex';
+    } catch (e) {
+      // Si falla (ej: no hay OPENAI_API_KEY configurada en el server), simplemente
+      // no se muestran chips — no es un error bloqueante para poder chatear.
+    }
+  }
+
+  // --- Sistema "Ubicación en Vivo" ---
+  let locationWatchId = null;
+  let locationCountdownInterval = null;
+  let locationExpiresAt = 0;
+
+  function startLocationShare(durationSeconds) {
+    if (!currentChatId) { alert('Entrá a un chat primero'); return; }
+    if (!navigator.geolocation) { alert('Tu navegador no soporta geolocalización'); return; }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        socket.emit('location_share_start', {
+          chatId: currentChatId, lat: pos.coords.latitude, lng: pos.coords.longitude, durationSeconds
+        });
+      },
+      (err) => alert('No se pudo acceder a tu ubicación: ' + err.message),
+      { enableHighAccuracy: true }
+    );
+  }
+
+  function stopLocationShare() {
+    if (locationWatchId !== null) { navigator.geolocation.clearWatch(locationWatchId); locationWatchId = null; }
+    if (locationCountdownInterval) { clearInterval(locationCountdownInterval); locationCountdownInterval = null; }
+    if (currentChatId) socket.emit('location_share_stop', { chatId: currentChatId });
+    document.getElementById('locationIdle').style.display = 'block';
+    document.getElementById('locationActive').style.display = 'none';
+  }
+
+  function renderLocationCountdown() {
+    const remaining = Math.max(0, locationExpiresAt - Date.now());
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    document.getElementById('locationCountdown').textContent =
+      `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    if (remaining <= 0) stopLocationShare(); // vencimiento real lo maneja el cliente
+  }
+
+  function renderLiveLocationEntry(userId, lat, lng) {
+    let el = document.getElementById('loc_' + userId);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'loc_' + userId;
+      el.style.cssText = 'padding:6px 0; font-size:13px;';
+      document.getElementById('liveLocationList').appendChild(el);
+    }
+    const label = userId === myUserId ? 'Vos' : userId.slice(0, 8);
+    el.innerHTML = `📍 ${label}: <a href="https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}" target="_blank" rel="noopener">ver en el mapa</a>`;
+  }
+
+  function removeLiveLocationEntry(userId) {
+    const el = document.getElementById('loc_' + userId);
+    if (el) el.remove();
+  }
+
+  function registerLocationSocketListeners() {
+    socket.on('location_share_started', (state) => {
+      if (state.chatId !== currentChatId) return;
+      renderLiveLocationEntry(state.userId, state.lat, state.lng);
+      if (state.userId === myUserId) {
+        locationExpiresAt = state.expiresAt;
+        document.getElementById('locationIdle').style.display = 'none';
+        document.getElementById('locationActive').style.display = 'block';
+        renderLocationCountdown();
+        clearInterval(locationCountdownInterval);
+        locationCountdownInterval = setInterval(renderLocationCountdown, 1000);
+        // Mientras se comparte, el GPS del navegador manda updates reales.
+        locationWatchId = navigator.geolocation.watchPosition(
+          (pos) => socket.emit('location_update', { chatId: currentChatId, lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          () => {}, { enableHighAccuracy: true }
+        );
+      }
+    });
+
+    socket.on('location_update', ({ chatId, userId, lat, lng }) => {
+      if (chatId !== currentChatId) return;
+      renderLiveLocationEntry(userId, lat, lng);
+    });
+
+    socket.on('location_share_stopped', ({ chatId, userId }) => {
+      if (chatId !== currentChatId) return;
+      removeLiveLocationEntry(userId);
+      if (userId === myUserId) {
+        document.getElementById('locationIdle').style.display = 'block';
+        document.getElementById('locationActive').style.display = 'none';
+      }
+    });
+
+    socket.on('location_share_status', ({ chatId, active }) => {
+      if (chatId !== currentChatId) return;
+      document.getElementById('liveLocationList').innerHTML = '';
+      active.forEach((s) => renderLiveLocationEntry(s.userId, s.lat, s.lng));
+    });
+
+    socket.on('location_error', ({ error }) => alert('Ubicación: ' + error));
+
+    socket.on('event_rsvp_update', ({ messageId, counts }) => {
+      renderRsvpCounts(messageId, counts);
+    });
+  }
+
+  // --- Sistema "Mensajes de Voz" ---
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordingStartedAt = 0;
+
+  async function toggleVoiceRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      return;
+    }
+    if (!currentChatId) { alert('Entrá a un chat primero'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        document.getElementById('voiceBtn').textContent = '🎤';
+        const durationSec = (Date.now() - recordingStartedAt) / 1000;
+        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+        await sendVoiceMessage(blob, durationSec);
+      };
+      mediaRecorder.start();
+      recordingStartedAt = Date.now();
+      document.getElementById('voiceBtn').textContent = '⏹️';
+    } catch (err) {
+      alert('No se pudo acceder al micrófono: ' + err.message);
+    }
+  }
+
+  // Waveform real (no decorativo): decodifica el audio grabado y saca picos
+  // de amplitud reales por bloque, para dibujar barras que reflejan el audio
+  // de verdad — no un patrón aleatorio.
+  async function computeWaveform(blob, buckets) {
+    try {
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      const raw = audioBuffer.getChannelData(0);
+      const blockSize = Math.floor(raw.length / buckets);
+      const waveform = [];
+      for (let i = 0; i < buckets; i++) {
+        let sum = 0;
+        for (let j = 0; j < blockSize; j++) sum += Math.abs(raw[i * blockSize + j] || 0);
+        waveform.push(Math.round((sum / blockSize) * 100) / 100);
+      }
+      audioCtx.close();
+      return waveform;
+    } catch (e) {
+      return []; // si el navegador no puede decodificar (raro), se manda sin waveform — no bloquea el envío
+    }
+  }
+
+  async function sendVoiceMessage(blob, durationSec) {
+    try {
+      const waveform = await computeWaveform(blob, 24);
+      const formData = new FormData();
+      formData.append('file', blob, 'voice.webm');
+      const uploadRes = await fetch(`${SERVER}/api/files/upload`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData
+      });
+      if (!uploadRes.ok) throw new Error('No se pudo subir la nota de voz');
+      const { fileId, fileKey } = await uploadRes.json();
+
+      const sendRes = await fetch(`${SERVER}/api/chat/send`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          chatId: currentChatId, content: '🎤 Nota de voz', contentType: 'VOICE',
+          metadata: { fileId, fileKey, durationSec, waveform }
+        })
+      });
+      if (!sendRes.ok) {
+        const data = await sendRes.json().catch(() => ({}));
+        throw new Error(data.error || 'No se pudo enviar la nota de voz');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  function renderVoiceMessage(msg) {
+    const wf = (msg.metadata?.waveform || []);
+    const bars = wf.length
+      ? wf.map((v) => `<span style="display:inline-block; width:3px; margin-right:1px; background:var(--accent); height:${Math.max(3, Math.round(v * 40))}px; vertical-align:middle;"></span>`).join('')
+      : '';
+    const durationLabel = msg.metadata?.durationSec ? Math.round(msg.metadata.durationSec) + 's' : '';
+    return `<div style="display:flex; align-items:center; gap:8px;">
+      <button class="emoji-chip" style="font-size:13px" onclick="playVoiceMessage('${msg.metadata?.fileId}','${msg.metadata?.fileKey}', this)">▶️</button>
+      <span style="height:40px; display:inline-flex; align-items:flex-end;">${bars}</span>
+      <span style="font-size:11px; color:var(--muted);">${durationLabel}</span>
+    </div>`;
+  }
+
+  async function playVoiceMessage(fileId, fileKey, btn) {
+    try {
+      btn.textContent = '⏳';
+      const res = await fetch(`${SERVER}/api/files/download/${fileId}?key=${fileKey}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('No se pudo reproducir la nota de voz');
+      const blob = await res.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.onended = () => { btn.textContent = '▶️'; };
+      btn.textContent = '⏸️';
+      await audio.play();
+    } catch (err) {
+      btn.textContent = '▶️';
+      showToast(err.message, 'error');
+    }
+  }
+
+  // --- Sistema "Eventos con RSVP" ---
+  async function createEvent() {
+    const title = document.getElementById('eventTitle').value.trim();
+    const date = document.getElementById('eventDate').value;
+    const location = document.getElementById('eventLocation').value.trim();
+    if (!title || !currentChatId) { alert('Escribí un título y entrá a un chat primero'); return; }
+    try {
+      const res = await fetch(`${SERVER}/api/events/create`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ chatId: currentChatId, title, date: date || undefined, location: location || undefined })
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'No se pudo crear el evento'); }
+      document.getElementById('eventTitle').value = '';
+      document.getElementById('eventDate').value = '';
+      document.getElementById('eventLocation').value = '';
+      closeModal('eventModal');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  function renderEventMessage(msg) {
+    const meta = msg.metadata || {};
+    const dateLabel = meta.date ? new Date(meta.date).toLocaleString() : 'Sin fecha';
+    return `<div style="text-align:left;">
+      <div style="font-weight:700; margin-bottom:4px;">📅 ${escapeHtml(meta.title || 'Evento')}</div>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+        🕒 ${escapeHtml(dateLabel)}${meta.location ? ' · 📍 ' + escapeHtml(meta.location) : ''}
+      </div>
+      <div class="chip-row">
+        <button class="emoji-chip" style="font-size:13px" onclick="rsvpEvent('${msg.id}','GOING', this)">✅ Voy</button>
+        <button class="emoji-chip" style="font-size:13px" onclick="rsvpEvent('${msg.id}','NOT_GOING', this)">❌ No puedo</button>
+        <button class="emoji-chip" style="font-size:13px" onclick="rsvpEvent('${msg.id}','MAYBE', this)">🤷 Tal vez</button>
+      </div>
+      <div id="rsvpCounts_${msg.id}" style="font-size:12px; color:var(--muted); margin-top:6px;">Cargando respuestas...</div>
+    </div>`;
+  }
+
+  async function rsvpEvent(messageId, response) {
+    try {
+      const res = await fetch(`${SERVER}/api/events/${messageId}/rsvp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ response })
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'No se pudo registrar tu respuesta'); }
+      const { counts } = await res.json();
+      renderRsvpCounts(messageId, counts);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  function renderRsvpCounts(messageId, counts) {
+    const el = document.getElementById('rsvpCounts_' + messageId);
+    if (el) el.textContent = `✅ ${counts.GOING} · ❌ ${counts.NOT_GOING} · 🤷 ${counts.MAYBE}`;
+  }
+
+  async function loadRsvpCounts(messageId) {
+    try {
+      const { counts } = await fetch(`${SERVER}/api/events/${messageId}/rsvp`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+      renderRsvpCounts(messageId, counts);
+    } catch (e) { /* si falla, se queda el texto "Cargando" — no bloquea el chat */ }
+  }
+
+  function useSmartReply(btn) {
+    document.getElementById('msgInput').value = btn.textContent;
+    document.getElementById('smartReplyRow').style.display = 'none';
+    document.getElementById('msgInput').focus();
+  }
+
+  async function openFoldersModal() {
+    openModal('foldersModal');
+    await refreshFolders();
+  }
+
+  async function refreshFolders() {
+    const { folders } = await fetch(`${SERVER}/api/chat-folders`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+    const list = document.getElementById('foldersList');
+    const names = Object.keys(folders || {});
+    if (!names.length) {
+      list.innerHTML = '<p style="color:var(--muted)">Todavía no creaste ninguna carpeta</p>';
+      return;
+    }
+    list.innerHTML = names.map(name =>
+      `<div style="padding:8px; background:var(--card2); border-radius:10px; margin-bottom:6px; cursor:pointer;" onclick="addCurrentChatToFolder('${name}')">
+        <strong>${escapeHtml(name)}</strong> <span style="color:var(--muted); font-size:12px;">(${folders[name].length} chats)</span>
+      </div>`
+    ).join('');
+  }
+
+  async function createFolder() {
+    const input = document.getElementById('newFolderName');
+    const name = input.value.trim();
+    if (!name) return;
+    await fetch(`${SERVER}/api/chat-folders/${encodeURIComponent(name)}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }
+    });
+    input.value = '';
+    await refreshFolders();
+  }
+
+  async function addCurrentChatToFolder(folderName) {
+    if (!currentChatId) { showToast('Abrí un chat primero para sumarlo a una carpeta', 'error'); return; }
+    const res = await fetch(`${SERVER}/api/chat-folders/${encodeURIComponent(folderName)}/chats/${currentChatId}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      showToast(`Chat sumado a "${folderName}"`, 'success');
+      await refreshFolders();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'No se pudo sumar el chat', 'error');
+    }
+  }
+
+  async function joinChat() {
+    currentChatId = document.getElementById('chatIdInput').value.trim();
+    if (!currentChatId) return;
+    socket.emit('join_room', currentChatId);
+    socket.emit('location_share_status', { chatId: currentChatId });
+    document.getElementById('locationIdle').style.display = 'block';
+    document.getElementById('locationActive').style.display = 'none';
+    document.getElementById('chatTitle').textContent = 'Chat: ' + currentChatId;
+    showSkeletons();
+    try {
+      const response = await fetch(`${SERVER}/api/chat/${currentChatId}/history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('No se pudo cargar el historial (¿existe ese chat?)');
+      const data = await response.json();
+      document.getElementById('messages').innerHTML = '';
+      if (Array.isArray(data.messages)) { for (const msg of data.messages) { await renderMessage(msg); } }
+      oldestLoadedId = data.oldestId;
+      hasMoreHistory = data.hasMore;
+      renderLoadMoreButton();
+      closeModal('chatModal');
+    } catch (err) {
+      document.getElementById('messages').innerHTML = '';
+      showToast(err.message, 'error');
+    }
+  }
+
+  // Sistema "Cargar más historial": pagina hacia atrás usando el cursor
+  // `before` que devuelve el backend, en vez de traer todo el chat de una vez.
+  function renderLoadMoreButton() {
+    const existing = document.getElementById('loadMoreBtn');
+    if (existing) existing.remove();
+    if (!hasMoreHistory || !oldestLoadedId) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'loadMoreBtn';
+    btn.textContent = 'Cargar mensajes anteriores';
+    btn.style.cssText = 'align-self:center; margin:8px 0; background:var(--card2); color:var(--text); border:none; border-radius:12px; padding:10px 16px; cursor:pointer; font-size:13px;';
+    btn.onclick = loadMoreHistory;
+    document.getElementById('messages').prepend(btn);
+  }
+
+  async function loadMoreHistory() {
+    if (!oldestLoadedId) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/${currentChatId}/history?before=${oldestLoadedId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      const container = document.getElementById('messages');
+      const scrollBefore = container.scrollHeight;
+
+      document.getElementById('loadMoreBtn')?.remove();
+
+      // renderMessage() appendea al final del contenedor; como estos mensajes
+      // son más viejos, los movemos al principio preservando su orden relativo.
+      const fragment = document.createDocumentFragment();
+      for (const msg of data.messages) { await renderMessage(msg); }
+      const newNodes = Array.from(container.children).slice(-data.messages.length);
+      newNodes.forEach((node) => fragment.appendChild(node));
+      container.prepend(fragment);
+      container.scrollTop = container.scrollHeight - scrollBefore;
+
+      oldestLoadedId = data.oldestId;
+      hasMoreHistory = data.hasMore;
+      renderLoadMoreButton();
+    } catch (err) {
+      showToast('No se pudo cargar más historial', 'error');
+    }
+  }
+
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    else socket?.emit('typing', { chatId: currentChatId });
+  }
+
+  let replyingToId = null; // Sistema "Hilos de Respuesta": si no es null, el próximo mensaje se manda como respuesta a este.
+
+  function replyToMsg(id) {
+    replyingToId = id;
+    const preview = (messagesById[id]?.content || '').slice(0, 60);
+    document.getElementById('replyPreview').style.display = 'flex';
+    document.getElementById('replyPreviewText').textContent = preview;
+    document.getElementById('msgInput').focus();
+  }
+
+  function cancelReply() {
+    replyingToId = null;
+    document.getElementById('replyPreview').style.display = 'none';
+  }
+
+  // ===== Sistema "E2E real (fase 2)": cifrado mensaje-a-mensaje =====
+  // Cada mensaje se cifra con una clave simétrica random de un solo uso
+  // (nacl.secretbox). Esa clave se "envuelve" (cifra) una vez POR CADA
+  // destinatario usando ECDH real (nacl.box) entre mi clave privada y la
+  // pública de esa persona — así en un grupo de 10 personas no hay que
+  // cifrar el mensaje 10 veces, solo la clave chiquita 10 veces. El
+  // servidor recibe el sobre completo y no tiene ninguna clave privada
+  // para abrir nada de esto.
+  function b64e(bytes) { return btoa(String.fromCharCode(...bytes)); }
+  function b64d(str) { return new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0))); }
+
+  function getMyKeys() {
+    const privateKeyB64 = localStorage.getItem('pit_e2e_privkey');
+    const publicKeyB64 = localStorage.getItem('pit_e2e_pubkey');
+    if (!privateKeyB64 || !publicKeyB64) return null;
+    return { secretKey: b64d(privateKeyB64), publicKey: b64d(publicKeyB64) };
+  }
+
+  // members: [{ userId, publicKey (base64) }] — incluye al remitente, así
+  // el remitente también puede releer su propio mensaje en otro dispositivo.
+  // ===== Sistema "Double Ratchet real" (E2E real, fase 5) =====
+  // Versión completa: no solo la cadena simétrica (que ya daba secreto
+  // hacia adelante — filtrar la clave de hoy no abre mensajes de ayer),
+  // sino también el ratchet DH cruzado, que da secreto DESPUÉS de un
+  // compromiso: si alguien roba mi clave privada real hoy, en cuanto la
+  // otra persona me responda una vez más, la conversación vuelve a estar
+  // protegida (esa respuesta ratchea con una clave efímera nueva que el
+  // atacante nunca tuvo).
+  //
+  // Cómo: cada sesión (yo, la otra persona, este chat) tiene una "raíz"
+  // que solo avanza con un DH real (nunca con hashes solos). Cuando tengo
+  // que mandar y "me toca ratchear" (porque recién recibí algo nuevo de
+  // la otra persona), genero un par de claves DH fresco, lo combino con
+  // la última pública que me mandaron, y de ahí sale una raíz nueva + una
+  // cadena de envío nueva. Mi clave privada de ese par SE RETIENE (no se
+  // borra al toque) hasta el PRÓXIMO ratchet — recién ahí se reemplaza y
+  // la vieja queda inservible para siempre, ni con la clave estática se
+  // puede reconstruir (verificado con una prueba real de round-trip).
+  //
+  // KDF: HKDF-SHA256 real (RFC 5869), vía WebCrypto — reemplaza la versión
+  // anterior (SHA-512 con etiquetas concatenadas a mano), que funcionaba
+  // pero no era un KDF estandarizado. Esto era el primer punto marcado en
+  // CRYPTO_DESIGN.md para antes de una auditoría externa. Validado antes
+  // de integrarlo con una prueba aislada (determinismo, separación de
+  // dominio por `info`, y que la cadena simétrica realmente avanza).
+  async function hmacSha256(keyBytes, dataBytes) {
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, dataBytes);
+    return new Uint8Array(sig);
+  }
+  // HKDF Extract-then-Expand completo (RFC 5869) — se usa para derivar raíz
+  // + cadena nueva a partir de una salida de DH (que NO es uniformemente
+  // random, por eso hace falta el paso de "Extract").
+  async function hkdf(ikm, salt, info, length) {
+    const prk = await hmacSha256(salt, ikm);
+    let t = new Uint8Array(0);
+    let okm = new Uint8Array(0);
+    let counter = 1;
+    while (okm.length < length) {
+      const input = new Uint8Array(t.length + info.length + 1);
+      input.set(t, 0); input.set(info, t.length); input[t.length + info.length] = counter;
+      t = await hmacSha256(prk, input);
+      const next = new Uint8Array(okm.length + t.length);
+      next.set(okm, 0); next.set(t, okm.length);
+      okm = next;
+      counter++;
+    }
+    return okm.slice(0, length);
+  }
+  // Paso de cadena simétrica: acá el material de entrada YA es uniforme
+  // (es la propia cadena, no un DH), así que alcanza con HMAC directo —
+  // mismo criterio que usa Signal para el KDF chain (no hace falta el
+  // "Extract" completo cuando el input ya es indistinguible de random).
+  async function chainStep(chainKeyBytes) {
+    const messageKey = await hmacSha256(chainKeyBytes, new Uint8Array([0x01]));
+    const nextChainKey = await hmacSha256(chainKeyBytes, new Uint8Array([0x02]));
+    return { messageKey, nextChainKey };
+  }
+  async function kdfRootAndChain(rootKeyBytes, dhOutput, info) {
+    const okm = await hkdf(dhOutput, rootKeyBytes, info, 64);
+    return { newRoot: okm.slice(0, 32), newChain: okm.slice(32, 64) };
+  }
+  const INFO_ROOT_STEP = new TextEncoder().encode('pit-ratchet-root-step-v1');
+  const INFO_ROOT_BOOTSTRAP = new TextEncoder().encode('pit-ratchet-root-bootstrap-v1');
+  const MAX_RATCHET_LOOKAHEAD = 200; // tope real para no colgar el navegador si faltan mensajes
+
+  function sessionStorageKey(chatId, peerId) {
+    return `pit_dhratchet_${chatId}_${peerId}`;
+  }
+
+  async function loadSession(chatId, peerId, peerStaticPublicKeyB64) {
+    const raw = localStorage.getItem(sessionStorageKey(chatId, peerId));
+    if (raw) return JSON.parse(raw);
+    // Primera vez que le hablo a esta persona en este chat: arranco la
+    // raíz con HKDF sobre el ECDH estático (simétrico, mismo resultado
+    // para ambos lados) y bootstrapeo "su última ratchet pública" con su
+    // clave estática real — hasta que mande su primera ratchet key de verdad.
+    const myKeys = getMyKeys();
+    const staticDh = nacl.box.before(b64d(peerStaticPublicKeyB64), myKeys.secretKey);
+    const root = await hkdf(staticDh, new Uint8Array(32), INFO_ROOT_BOOTSTRAP, 32);
+    return {
+      rootKey: b64e(root),
+      myRatchetSecretKey: null, myRatchetPublicKey: null,
+      theirRatchetPublicKey: peerStaticPublicKeyB64,
+      sendChain: null, sendCounter: 0,
+      recvChain: null, recvCounter: 0,
+      needsNewSendRatchet: true
+    };
+  }
+  function saveSession(chatId, peerId, session) {
+    localStorage.setItem(sessionStorageKey(chatId, peerId), JSON.stringify(session));
+  }
+
+  // Devuelve la clave de mensaje a usar AHORA para mandarle a `peerId`, y
+  // la ratchet pública mía a incluir en el sobre (viaja en claro, no hace
+  // falta que sea secreta — es la mitad "pública" del DH).
+  async function ratchetSendStep(chatId, peerId, peerStaticPublicKeyB64) {
+    const session = await loadSession(chatId, peerId, peerStaticPublicKeyB64);
+
+    if (session.needsNewSendRatchet || !session.sendChain) {
+      const eph = nacl.box.keyPair();
+      const dh = nacl.box.before(b64d(session.theirRatchetPublicKey), eph.secretKey);
+      const { newRoot, newChain } = await kdfRootAndChain(b64d(session.rootKey), dh, INFO_ROOT_STEP);
+      session.rootKey = b64e(newRoot);
+      session.sendChain = b64e(newChain);
+      session.myRatchetSecretKey = b64e(eph.secretKey); // se retiene hasta el próximo ratchet
+      session.myRatchetPublicKey = b64e(eph.publicKey);
+      session.needsNewSendRatchet = false;
+    }
+
+    const { messageKey, nextChainKey } = await chainStep(b64d(session.sendChain));
+    session.sendChain = b64e(nextChainKey);
+    const counter = session.sendCounter;
+    session.sendCounter = counter + 1;
+
+    saveSession(chatId, peerId, session);
+    return { messageKey, counter, myRatchetPublicKey: session.myRatchetPublicKey };
+  }
+
+  // Descifra un paso: si la ratchet pública que mandó `peerId` es nueva
+  // (nunca vista), primero hago mi propio paso de ratchet DH combinando MI
+  // clave de ratchet retenida con la suya nueva — ESO es lo que restaura
+  // la protección tras un compromiso, sin depender de la clave estática.
+  async function ratchetRecvStep(chatId, peerId, peerStaticPublicKeyB64, senderRatchetPublicKeyB64, targetCounter) {
+    const session = await loadSession(chatId, peerId, peerStaticPublicKeyB64);
+
+    const isNewRatchetKey = session.theirRatchetPublicKey !== senderRatchetPublicKeyB64;
+    if (isNewRatchetKey) {
+      const myKeys = getMyKeys();
+      const mySecretForDH = session.myRatchetSecretKey ? b64d(session.myRatchetSecretKey) : myKeys.secretKey;
+      const dh = nacl.box.before(b64d(senderRatchetPublicKeyB64), mySecretForDH);
+      const { newRoot, newChain } = await kdfRootAndChain(b64d(session.rootKey), dh, INFO_ROOT_STEP);
+      session.rootKey = b64e(newRoot);
+      session.recvChain = b64e(newChain);
+      session.recvCounter = 0;
+      session.theirRatchetPublicKey = senderRatchetPublicKeyB64;
+      session.needsNewSendRatchet = true; // mi próximo envío también ratchea, completando el cruce
+    }
+
+    if (targetCounter < session.recvCounter) { saveSession(chatId, peerId, session); return null; } // repetido/ya descartado
+    if (targetCounter - session.recvCounter > MAX_RATCHET_LOOKAHEAD) { saveSession(chatId, peerId, session); return null; }
+
+    let chainKeyBytes = b64d(session.recvChain);
+    let messageKey = null;
+    for (let i = session.recvCounter; i <= targetCounter; i++) {
+      const step = await chainStep(chainKeyBytes);
+      messageKey = step.messageKey;
+      chainKeyBytes = step.nextChainKey;
+    }
+    session.recvChain = b64e(chainKeyBytes);
+    session.recvCounter = targetCounter + 1;
+    saveSession(chatId, peerId, session);
+    return messageKey;
+  }
+
+
+  // members: [{ userId, publicKey (base64) }] — incluye al remitente, así
+  // el remitente también puede releer su propio mensaje en otro dispositivo.
+  // needsChatId: hace falta para que el ratchet sea independiente por chat
+  // (así hablarle a la misma persona en dos grupos distintos no comparte cadena).
+  async function encryptForMembers(plaintext, members, chatId) {
+    const myKeys = getMyKeys();
+    if (!myKeys) throw new Error('No hay claves E2E locales — registrate/entrá de nuevo para generarlas.');
+
+    const contentKey = nacl.randomBytes(nacl.secretbox.keyLength);
+    const contentNonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+    const ciphertext = nacl.secretbox(nacl.util ? nacl.util.decodeUTF8(plaintext) : new TextEncoder().encode(plaintext), contentNonce, contentKey);
+
+    const wrappedKeys = {};
+    for (const m of members) {
+      if (!m.publicKey) continue; // usuario legado sin clave E2E: no puede recibir este mensaje
+      // La clave de envoltura YA NO es el ECDH estático directo — es un
+      // paso del ratchet simétrico con esa persona en este chat. Si mi
+      // clave privada real se filtra mañana, esta clave puntual ya fue
+      // destruida y no sirve para nada.
+      const { messageKey, counter, myRatchetPublicKey } = await ratchetSendStep(chatId, m.userId, m.publicKey);
+      const wrapNonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+      const wrapped = nacl.secretbox(contentKey, wrapNonce, messageKey);
+      wrappedKeys[m.userId] = { wrapped: b64e(wrapped), nonce: b64e(wrapNonce), step: counter, ratchetPublicKey: myRatchetPublicKey };
+    }
+
+    return JSON.stringify({
+      v: 2,
+      ciphertext: b64e(ciphertext),
+      nonce: b64e(contentNonce),
+      senderPublicKey: b64e(myKeys.publicKey),
+      wrappedKeys
+    });
+  }
+
+  // Devuelve el texto plano, o null si no lo puedo abrir (no era para mí,
+  // clave vieja, o el sobre está corrupto) — nunca tira una excepción que
+  // rompa el render de todo el chat.
+  async function decryptEnvelope(envelopeStr, chatId, senderId) {
+    try {
+      const envelope = JSON.parse(envelopeStr);
+      if (!envelope || (envelope.v !== 1 && envelope.v !== 2)) return null;
+      const myKeys = getMyKeys();
+      if (!myKeys) return null;
+      const myWrapped = envelope.wrappedKeys[myUserId];
+      if (!myWrapped) return null;
+
+      const senderPublicKey = b64d(envelope.senderPublicKey);
+      let contentKey;
+      if (envelope.v === 1) {
+        // Sobres viejos (antes del ratchet): ECDH estático directo.
+        contentKey = nacl.box.open(b64d(myWrapped.wrapped), b64d(myWrapped.nonce), senderPublicKey, myKeys.secretKey);
+      } else {
+        const messageKey = await ratchetRecvStep(chatId, senderId, envelope.senderPublicKey, myWrapped.ratchetPublicKey, myWrapped.step);
+        if (!messageKey) return null;
+        contentKey = nacl.secretbox.open(b64d(myWrapped.wrapped), b64d(myWrapped.nonce), messageKey);
+      }
+      if (!contentKey) return null;
+
+      const plainBytes = nacl.secretbox.open(b64d(envelope.ciphertext), b64d(envelope.nonce), contentKey);
+      if (!plainBytes) return null;
+      return nacl.util ? nacl.util.encodeUTF8(plainBytes) : new TextDecoder().decode(plainBytes);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Cache simple de miembros por chat (userId -> publicKey) para no pegarle
+  // al endpoint /members en cada mensaje que se manda.
+  const chatMembersCache = {};
+  async function getChatMembers(chatId) {
+    if (chatMembersCache[chatId]) return chatMembersCache[chatId];
+    const res = await fetch(`${SERVER}/api/chat/${chatId}/members`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error('No se pudo obtener las claves públicas del chat');
+    const data = await res.json();
+    chatMembersCache[chatId] = data.members;
+    return data.members;
+  }
+
+  // ===== Sistema "Vinculación de Dispositivo" (E2E real, fase 4) =====
+  // Sin esto, entrar desde otro dispositivo pierde el historial para
+  // siempre (la clave privada solo vive en el localStorage de donde te
+  // registraste). El servidor participa como mensajero ciego: nunca ve la
+  // clave privada real, solo relaciona linkId<->userId y guarda un blob
+  // cifrado de un solo uso.
+
+  // Se llama en un dispositivo SIN claves E2E (nuevo). Genera un par
+  // efímero y arranca el vínculo — devuelve el código para mostrar como
+  // QR/texto en el otro dispositivo.
+  async function startDeviceLink() {
+    const ephemeral = nacl.box.keyPair();
+    const startRes = await fetch(`${SERVER}/api/devicelink/start`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+    const code = JSON.stringify({ linkId: startRes.linkId, ephemeralPublicKey: b64e(ephemeral.publicKey) });
+    return { code, linkId: startRes.linkId, ephemeralSecretKey: ephemeral.secretKey };
+  }
+
+  // Se llama en el dispositivo NUEVO, después de mostrar el código, hasta
+  // que el otro dispositivo confirma. Descifra y guarda las claves reales
+  // — recién ahí este dispositivo puede leer el historial real.
+  async function claimDeviceLink(linkId, ephemeralSecretKey) {
+    const res = await fetch(`${SERVER}/api/devicelink/${linkId}/claim`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return null; // todavía no, sigue esperando quien llama
+    const { ciphertext, nonce, senderPublicKey } = await res.json();
+    const shared = nacl.box.before(b64d(senderPublicKey), ephemeralSecretKey);
+    const opened = nacl.box.open.after(b64d(ciphertext), b64d(nonce), shared);
+    if (!opened) throw new Error('No se pudo descifrar el vínculo — probá de nuevo');
+    const { secretKey, publicKey } = JSON.parse(new TextDecoder().decode(opened));
+    localStorage.setItem('pit_e2e_privkey', secretKey);
+    localStorage.setItem('pit_e2e_pubkey', publicKey);
+    return true;
+  }
+
+  // Se llama en el dispositivo YA VINCULADO, después de leer el código del
+  // dispositivo nuevo (QR escaneado o texto pegado a mano). Cifra la clave
+  // real con un secreto ECDH efímero y la manda — el servidor solo ve el
+  // blob cifrado.
+  async function deliverDeviceLink(scannedCode) {
+    const { linkId, ephemeralPublicKey } = JSON.parse(scannedCode);
+    const myKeys = getMyKeys();
+    if (!myKeys) throw new Error('Este dispositivo tampoco tiene claves E2E todavía');
+
+    const shared = nacl.box.before(b64d(ephemeralPublicKey), myKeys.secretKey);
+    const nonce = nacl.randomBytes(nacl.box.nonceLength);
+    const payload = new TextEncoder().encode(JSON.stringify({
+      secretKey: b64e(myKeys.secretKey), publicKey: b64e(myKeys.publicKey)
+    }));
+    const ciphertext = nacl.box.after(payload, nonce, shared);
+
+    const res = await fetch(`${SERVER}/api/devicelink/${linkId}/deliver`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ ciphertext: b64e(ciphertext), nonce: b64e(nonce), senderPublicKey: b64e(myKeys.publicKey) })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'No se pudo vincular el dispositivo');
+    }
+    return true;
+  }
+
+  let deviceLinkPollTimer = null;
+  let deviceLinkCurrent = null;
+
+  async function openDeviceLinkModal() {
+    document.getElementById('deviceLinkModal').style.display = 'flex';
+    const haveKeys = !!getMyKeys();
+    document.getElementById('deviceLinkStep_new').style.display = haveKeys ? 'none' : 'block';
+    document.getElementById('deviceLinkStep_existing').style.display = haveKeys ? 'block' : 'none';
+    if (haveKeys) return; // este dispositivo ya tiene claves: solo puede ENTREGAR el vínculo, no pedirlo
+
+    try {
+      const { code, linkId, ephemeralSecretKey } = await startDeviceLink();
+      deviceLinkCurrent = { linkId, ephemeralSecretKey };
+      document.getElementById('deviceLinkCodeOut').value = code;
+      document.getElementById('deviceLinkQr').innerHTML = '';
+      new QRCode(document.getElementById('deviceLinkQr'), { text: code, width: 180, height: 180 });
+
+      if (deviceLinkPollTimer) clearInterval(deviceLinkPollTimer);
+      deviceLinkPollTimer = setInterval(async () => {
+        try {
+          const done = await claimDeviceLink(linkId, ephemeralSecretKey);
+          if (done) {
+            clearInterval(deviceLinkPollTimer);
+            document.getElementById('deviceLinkStatus').textContent = '✅ ¡Vinculado! Ya tenés tu clave real acá.';
+            showToast('Dispositivo vinculado — recargá para ver tu historial', 'success');
+          }
+        } catch (e) {
+          clearInterval(deviceLinkPollTimer);
+          document.getElementById('deviceLinkStatus').textContent = '❌ ' + e.message;
+        }
+      }, 3000);
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  async function confirmDeviceLink() {
+    const scanned = document.getElementById('deviceLinkCodeIn').value.trim();
+    if (!scanned) return;
+    try {
+      await deliverDeviceLink(scanned);
+      showToast('Listo — tu otro dispositivo ya puede terminar de vincularse', 'success');
+      closeModal('deviceLinkModal');
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  let safetyNumberOtherUserId = null;
+
+  function openSearchModal() {
+    document.getElementById('searchModal').style.display = 'flex';
+    document.getElementById('searchQueryInput').value = '';
+    document.getElementById('searchResults').innerHTML = '';
+    document.getElementById('searchQueryInput').focus();
+  }
+
+  function runClientSearch() {
+    const q = document.getElementById('searchQueryInput').value;
+    const onlyCurrent = document.getElementById('searchOnlyCurrentChat').checked;
+    const container = document.getElementById('searchResults');
+    if (q.trim().length < 2) { container.innerHTML = '<p style="font-size:12px; color:var(--muted);">Escribí al menos 2 caracteres…</p>'; return; }
+
+    const results = searchMyMessages(q, onlyCurrent ? currentChatId : null);
+    if (results.length === 0) {
+      container.innerHTML = '<p style="font-size:12px; color:var(--muted);">Sin resultados en lo que ya viste en este dispositivo.</p>';
+      return;
+    }
+    container.innerHTML = results.map(r => `
+      <div style="padding:8px; border-bottom:1px solid rgba(138,131,120,.18); cursor:pointer;" onclick="jumpToSearchResult('${r.chatId}','${r.messageId}')">
+        <div style="font-size:12px; color:var(--muted);">${new Date(r.createdAt).toLocaleString('es-AR')}</div>
+        <div style="font-size:14px;">${escapeHtmlClient(r.content).slice(0, 140)}</div>
+      </div>
+    `).join('');
+  }
+
+  function escapeHtmlClient(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function jumpToSearchResult(chatId, messageId) {
+    closeModal('searchModal');
+    if (chatId !== currentChatId) {
+      document.getElementById('chatIdInput').value = chatId;
+      joinChat();
+    }
+    setTimeout(() => {
+      const el = document.getElementById('m_' + messageId);
+      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.outline = '2px solid var(--accent)'; setTimeout(() => el.style.outline = '', 1500); }
+    }, chatId !== currentChatId ? 600 : 0);
+  }
+
+  async function openSafetyNumberModal() {
+    if (!currentChatId) { showToast('Abrí un chat primero', 'error'); return; }
+    document.getElementById('safetyNumberModal').style.display = 'flex';
+    document.getElementById('safetyNumberCode').textContent = 'Cargando…';
+    document.getElementById('safetyNumberAlert').style.display = 'none';
+    document.getElementById('safetyNumberVerifiedTag').style.display = 'none';
+
+    try {
+      const members = await getChatMembers(currentChatId);
+      const other = members.find(m => m.userId !== myUserId);
+      if (!other) { showToast('Este chat no tiene otra persona con quien verificar', 'error'); return; }
+      safetyNumberOtherUserId = other.userId;
+
+      const res = await fetch(`${SERVER}/api/auth/safety-number/${other.userId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo obtener el código');
+
+      document.getElementById('safetyNumberOtherName').textContent = data.otherUserName || 'la otra persona';
+      document.getElementById('safetyNumberCode').textContent = data.safetyNumber;
+      document.getElementById('safetyNumberAlert').style.display = data.keyChanged ? 'block' : 'none';
+      document.getElementById('safetyNumberVerifiedTag').style.display = data.verified ? 'block' : 'none';
+    } catch (e) {
+      document.getElementById('safetyNumberCode').textContent = '—';
+      showToast(e.message, 'error');
+    }
+  }
+
+  async function verifySafetyNumber() {
+    if (!safetyNumberOtherUserId) return;
+    try {
+      const res = await fetch(`${SERVER}/api/auth/safety-number/${safetyNumberOtherUserId}/verify`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('No se pudo marcar como verificado');
+      document.getElementById('safetyNumberAlert').style.display = 'none';
+      document.getElementById('safetyNumberVerifiedTag').style.display = 'block';
+      showToast('Verificado', 'success');
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  async function send() {
+    const input = document.getElementById('msgInput');
+    const content = input.value.trim();
+    if (!content || !currentChatId) return;
+    try {
+      const members = await getChatMembers(currentChatId);
+      const envelope = await encryptForMembers(content, members, currentChatId);
+      const handles = Array.from(content.matchAll(/@(\w+)/g)).map(m => m[1].toLowerCase());
+      const mentions = members
+        .filter(m => handles.includes((m.name || '').toLowerCase()))
+        .map(m => m.userId);
+      const response = await fetch(`${SERVER}/api/chat/send`, {
+        method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+        body: JSON.stringify({ chatId: currentChatId, content: envelope, mentions, replyToId: replyingToId || undefined })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'No se pudo enviar el mensaje');
+      }
+      input.value = '';
+      cancelReply();
+      document.getElementById('smartReplyRow').style.display = 'none';
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // Sistema "Hilos de Respuesta" (UI): abre el panel con el mensaje raíz y
+  // todas sus respuestas directas juntas, en vez de tener que buscarlas
+  // desperdigadas en el chat.
+  async function pinMsg(messageId) {
+    if (!currentChatId) return;
+    const res = await fetch(`${SERVER}/api/chat/pin/${currentChatId}/${messageId}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      showToast('Mensaje fijado', 'success');
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'No se pudo fijar (¿sos admin del grupo?)', 'error');
+    }
+  }
+
+  async function unpinMsg(messageId) {
+    await fetch(`${SERVER}/api/chat/pin/${currentChatId}/${messageId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
+    });
+    await openPinsModal();
+  }
+
+  async function openPinsModal() {
+    if (!currentChatId) { showToast('Abrí un chat primero', 'error'); return; }
+    openModal('pinsModal');
+    const { pinned } = await fetch(`${SERVER}/api/chat/pins/${currentChatId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+    const list = document.getElementById('pinsList');
+    if (!pinned || !pinned.length) {
+      list.innerHTML = '<p style="color:var(--muted)">No hay mensajes fijados en este chat</p>';
+      return;
+    }
+    list.innerHTML = pinned.map(m =>
+      `<div style="padding:8px; background:var(--card2); border-radius:10px; margin-bottom:6px; display:flex; justify-content:space-between; gap:8px; align-items:center;">
+        <span>${escapeHtml(m.content)}</span>
+        <button class="icon" onclick="unpinMsg('${m.id}')" title="Desfijar">✕</button>
+      </div>`
+    ).join('');
+  }
+
+  async function openThread(messageId) {
+    const data = await fetch(`${SERVER}/api/chat/thread/${messageId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+    if (!data.root) { showToast(data.error || 'No se pudo cargar el hilo', 'error'); return; }
+
+    const panel = document.getElementById('threadReplies');
+    panel.innerHTML = `<div style="padding:8px; background:var(--card2); border-radius:10px; margin-bottom:8px;"><strong>Original:</strong> ${escapeHtml(data.root.content)}</div>` +
+      data.replies.map(r => `<div style="padding:6px 8px; border-left:2px solid var(--accent); margin-bottom:4px;">${escapeHtml(r.content)}</div>`).join('');
+    document.getElementById('threadModalTitle').textContent = `Hilo (${data.replyCount} respuestas)`;
+    openModal('threadModal');
+  }
+
+  async function sendEphemeral(ttlSeconds) {
+    const content = document.getElementById('ephemeralContent').value.trim();
+    if (!content || !currentChatId) return;
+    await fetch(`${SERVER}/api/chat/ephemeral`, {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ chatId: currentChatId, content, ttlSeconds })
+    });
+    document.getElementById('ephemeralContent').value = '';
+    closeModal('ephemeralModal');
+  }
+
+  // ===== Sistema "Búsqueda real, client-side" (E2E, fase 6) =====
+  // La búsqueda server-side se dio de baja al pasar a E2E real (el server
+  // no puede leer ciphertext). Esta es la reemplaza de verdad: cada vez que
+  // el cliente descifra un mensaje para mostrarlo, se guarda el texto plano
+  // ACÁ (nunca sale del dispositivo) — buscar es simplemente recorrer este
+  // cache. Límite real y honesto: solo encuentra mensajes que este
+  // dispositivo ya cargó/renderizó alguna vez, no "todo tu historial desde
+  // el día 1" como haría una búsqueda server-side — ese es el precio real
+  // de que el servidor ya no pueda indexar nada por vos.
+  const searchablePlaintext = []; // [{ messageId, chatId, senderId, content, createdAt }]
+  const searchableIndexById = {};
+  function cacheSearchable(msg, plainContent) {
+    if (typeof plainContent !== 'string' || plainContent.startsWith('🔒')) return; // no indexamos lo que no se pudo abrir
+    const entry = { messageId: msg.id, chatId: msg.chatId || currentChatId, senderId: msg.senderId, content: plainContent, createdAt: msg.createdAt };
+    if (searchableIndexById[msg.id] !== undefined) {
+      searchablePlaintext[searchableIndexById[msg.id]] = entry;
+    } else {
+      searchableIndexById[msg.id] = searchablePlaintext.length;
+      searchablePlaintext.push(entry);
+    }
+  }
+
+  function searchMyMessages(query, chatIdFilter) {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return searchablePlaintext
+      .filter(e => (!chatIdFilter || e.chatId === chatIdFilter) && e.content.toLowerCase().includes(q))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 50);
+  }
+
+  async function renderMessage(msg) {
+    messagesById[msg.id] = msg;
+    // Sistema "E2E real (fase 2)": msg.content llega como el sobre cifrado
+    // del servidor — se descifra ACÁ, en el dispositivo, con mi clave
+    // privada local. Si no se puede abrir (mensaje viejo pre-E2E, o de un
+    // dispositivo sin la clave), se avisa en vez de mostrar basura o el
+    // JSON del sobre crudo.
+    const plainContent = (msg.contentType === 'VOICE' || msg.contentType === 'EVENT')
+      ? msg.content
+      : ((await decryptEnvelope(msg.content, msg.chatId || currentChatId, msg.senderId)) ?? '🔒 No se pudo descifrar este mensaje en este dispositivo');
+    if (msg.contentType !== 'VOICE' && msg.contentType !== 'EVENT') cacheSearchable(msg, plainContent);
+    const row = document.createElement('div');
+    row.className = 'msg-row' + (msg.senderId === myUserId ? ' mine' : '');
+    row.id = 'm_' + msg.id;
+    row.innerHTML = `
+      <div class="bubble">${msg.contentType === 'VOICE' ? renderVoiceMessage(msg) : msg.contentType === 'EVENT' ? renderEventMessage(msg) : renderMarkdown(plainContent)}</div>
+      <div class="meta-row">
+        ${msg.isEdited ? '<span class="edited-tag">editado</span>' : ''}
+        ${msg.isEphemeral ? '⏱️' : ''}
+        ${msg.forwardedFrom ? '↪️ reenviado' : ''}
+      </div>
+      <div id="linkcheck_${msg.id}"></div>
+      <div class="reactions-row" id="react_${msg.id}"></div>
+      <div class="msg-actions">
+        <button onclick="openReact('${msg.id}')">😊</button>
+        <button onclick="replyToMsg('${msg.id}')">Responder</button>
+        <button onclick="openThread('${msg.id}')">Ver hilo</button>
+        <button onclick="pinMsg('${msg.id}')">📌 Fijar</button>
+        ${msg.senderId === myUserId ? `<button onclick="editMsg('${msg.id}')">Editar</button>` : ''}
+        <button onclick="forwardMsg('${msg.id}')">Reenviar</button>
+        ${msg.senderId === myUserId ? `<button onclick="deleteMsg('${msg.id}')">Borrar</button>` : ''}
+      </div>
+    `;
+    document.getElementById('messages').appendChild(row);
+    row.scrollIntoView();
+    checkLinksInMessage({ ...msg, content: plainContent });
+    if (msg.contentType === 'EVENT') loadRsvpCounts(msg.id);
+  }
+
+  // Sistema "Detector de Enlaces Maliciosos" (cliente): busca URLs reales en
+  // el texto y consulta /api/link-preview, que ahora devuelve un reporte de
+  // seguridad real (homógrafos, acortadores, IPs, subdominios engañosos).
+  // Si es sospechoso, se muestra una advertencia ANTES de que alguien pueda
+  // hacer clic; si no, se muestra una vista previa normal.
+  const URL_REGEX = /https?:\/\/[^\s<>"']+/i;
+
+  async function checkLinksInMessage(msg) {
+    const match = msg.content.match(URL_REGEX);
+    if (!match) return;
+    const url = match[0];
+    const container = document.getElementById(`linkcheck_${msg.id}`);
+    if (!container) return;
+
+    try {
+      const response = await fetch(`${SERVER}/api/link-preview?url=${encodeURIComponent(url)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json();
+      const safety = data.safety;
+
+      if (safety && safety.isSuspicious) {
+        container.innerHTML = `
+          <div class="link-warning">
+            <div class="lw-title">⚠️ Este link parece sospechoso</div>
+            <ul>${safety.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+          </div>`;
+      } else if (data.title) {
+        container.innerHTML = `
+          <div class="link-preview-card">
+            ${data.image ? `<img src="${data.image}" alt="" />` : ''}
+            <div class="link-preview-body">
+              <div class="lp-title">${escapeHtml(data.title)}</div>
+              ${data.description ? `<div class="lp-desc">${escapeHtml(data.description)}</div>` : ''}
+            </div>
+          </div>`;
+      }
+    } catch {
+      // Si falla el preview (timeout, sitio caído, etc.) simplemente no se
+      // muestra nada — no interrumpe la lectura normal del chat.
+    }
+  }
+
+  function updateMessageEl(msg) {
+    messagesById[msg.id] = msg;
+    const el = document.getElementById('m_' + msg.id);
+    if (el) el.querySelector('.bubble').textContent = msg.content;
+  }
+
+  function renderReactions(messageId, reactions) {
+    const el = document.getElementById('react_' + messageId);
+    if (!el) return;
+    const counts = {};
+    reactions.forEach(r => counts[r.emoji] = (counts[r.emoji] || 0) + 1);
+    el.innerHTML = Object.entries(counts).map(([emoji, count]) =>
+      `<span class="reaction-chip">${emoji} ${count}</span>`
+    ).join('');
+  }
+
+  function openReact(messageId) { reactingToMessageId = messageId; openModal('reactModal'); }
+  async function reactTo(emoji) {
+    if (!reactingToMessageId) return;
+    await fetch(`${SERVER}/api/reaction/${reactingToMessageId}`, {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ emoji })
+    });
+    closeModal('reactModal');
+  }
+
+  async function editMsg(id) {
+    const current = messagesById[id]?.content || '';
+    const content = prompt('Editar mensaje:', current);
+    if (content === null || content === current) return;
+    await fetch(`${SERVER}/api/chat/message/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ content })
+    });
+  }
+
+  async function deleteMsg(id) {
+    const confirmed = await askConfirm('¿Borrar este mensaje? Vas a poder recuperarlo desde la papelera por 30 días.');
+    if (!confirmed) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/message/${id}`, {
+        method:'DELETE', headers:{ Authorization:`Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'No se pudo borrar');
+      const el = document.getElementById('m_' + id);
+      if (el) el.remove();
+      showToast('Mensaje movido a la papelera', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function forwardMsg(id) {
+    const toChatId = prompt('¿A qué chat reenviar? (ID)');
+    if (!toChatId) return;
+    try {
+      const response = await fetch(`${SERVER}/api/chat/forward/${id}`, {
+        method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+        body: JSON.stringify({ toChatId })
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'No se pudo reenviar');
+      showToast('Mensaje reenviado ✅', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  let searchScope = 'chat'; // 'chat' o 'global' — sistema de Búsqueda Global nuevo
+
+  function setSearchScope(scope) {
+    searchScope = scope;
+    document.getElementById('searchScopeChatBtn').style.background = scope === 'chat' ? 'var(--accent)' : '';
+    document.getElementById('searchScopeGlobalBtn').style.background = scope === 'global' ? 'var(--accent)' : '';
+  }
+
+  async function doSearch() {
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q) return;
+    let url;
+    if (searchScope === 'global') {
+      url = `${SERVER}/api/chat/search/global?q=${encodeURIComponent(q)}`;
+    } else {
+      if (!currentChatId) return;
+      url = `${SERVER}/api/chat/${currentChatId}/search?q=${encodeURIComponent(q)}`;
+    }
+    const results = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json());
+
+    if (searchScope === 'global') {
+      document.getElementById('searchResults').innerHTML = (results || []).map(m =>
+        `<div style="text-align:left; padding:8px; background:var(--card2); border-radius:10px; margin-top:6px; font-size:14px; cursor:pointer;" onclick="jumpToChatFromSearch('${m.chatId}')">
+          <div style="font-size:11px; color:var(--accent); font-weight:700; margin-bottom:3px;">${escapeHtml(m.chatName)}</div>
+          ${escapeHtml(m.content)}
+        </div>`
+      ).join('') || '<p style="color:var(--muted)">Sin resultados en ninguno de tus chats</p>';
+    } else {
+      document.getElementById('searchResults').innerHTML = (results || []).map(m =>
+        `<div style="text-align:left; padding:8px; background:var(--card2); border-radius:10px; margin-top:6px; font-size:14px;">${escapeHtml(m.content)}</div>`
+      ).join('') || '<p style="color:var(--muted)">Sin resultados</p>';
+    }
+  }
+
+  function jumpToChatFromSearch(chatId) {
+    closeModal('searchModal');
+    document.getElementById('chatIdInput').value = chatId;
+    joinChat();
+  }
+
+  async function openProfileModal() {
+    openModal('profileModal');
+    try {
+      const autoReply = await fetch(`${SERVER}/api/auto-reply`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+      document.getElementById('autoReplyEnabled').checked = !!autoReply.enabled;
+      document.getElementById('autoReplyMessage').value = autoReply.message || '';
+    } catch (e) { /* si falla, se ve el formulario vacío, no es bloqueante */ }
+  }
+
+  async function saveAutoReply() {
+    const enabled = document.getElementById('autoReplyEnabled').checked;
+    const message = document.getElementById('autoReplyMessage').value.trim();
+    const res = await fetch(`${SERVER}/api/auto-reply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ enabled, message })
+    });
+    if (res.ok) {
+      showToast(enabled ? 'Auto-respuesta activada' : 'Auto-respuesta guardada', 'success');
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'No se pudo guardar', 'error');
+    }
+  }
+
+  async function saveProfile() {
+    const name = document.getElementById('profileName').value.trim();
+    const bio = document.getElementById('profileBio').value.trim();
+    await fetch(`${SERVER}/api/user/me`, {
+      method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ name, bio })
+    });
+    closeModal('profileModal');
+  }
+
+  // Sistema "Bloqueo Biométrico (WebAuthn)": usa la API nativa del navegador.
+  // El dato biométrico (huella/rostro) NUNCA sale del dispositivo — el navegador
+  // solo entrega una firma criptográfica que el servidor verifica. Esto es real,
+  // no un mock: si el dispositivo no tiene sensor biométrico, el navegador pide
+  // el PIN del sistema operativo como alternativa (igual sigue siendo real).
+
+  function base64urlToBuffer(base64url) {
+    const padded = base64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(base64url.length + (4 - base64url.length % 4) % 4, '=');
+    const raw = atob(padded);
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+
+  function bufferToBase64url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let str = '';
+    for (const b of bytes) str += String.fromCharCode(b);
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function setupBiometric() {
+    if (!window.PublicKeyCredential) {
+      showToast('Tu navegador no soporta biometría (WebAuthn)', 'error');
+      return;
+    }
+    try {
+      const options = await fetch(`${SERVER}/api/biometric/register/options`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+
+      options.challenge = base64urlToBuffer(options.challenge);
+      options.user.id = base64urlToBuffer(options.user.id);
+      if (options.excludeCredentials) {
+        options.excludeCredentials = options.excludeCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+      }
+
+      const credential = await navigator.credentials.create({ publicKey: options });
+
+      const response = {
+        id: credential.id,
+        rawId: bufferToBase64url(credential.rawId),
+        type: credential.type,
+        deviceLabel: navigator.userAgentData?.platform || navigator.platform || 'Dispositivo',
+        response: {
+          clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+          attestationObject: bufferToBase64url(credential.response.attestationObject)
+        }
+      };
+
+      const result = await fetch(`${SERVER}/api/biometric/register/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(response)
+      }).then(r => r.json());
+
+      if (result.registered) {
+        showToast('Biometría activada ✅', 'success');
+        localStorage.setItem('pit-biometric-enabled', '1');
+      } else {
+        showToast(result.error || 'No se pudo activar', 'error');
+      }
+    } catch (err) {
+      showToast('Biometría cancelada o no disponible: ' + err.message, 'error');
+    }
+  }
+
+  async function unlockWithBiometric() {
+    try {
+      const options = await fetch(`${SERVER}/api/biometric/auth/options`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json());
+      if (options.error) { showToast(options.error, 'error'); return false; }
+
+      options.challenge = base64urlToBuffer(options.challenge);
+      options.allowCredentials = (options.allowCredentials || []).map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+
+      const assertion = await navigator.credentials.get({ publicKey: options });
+
+      const response = {
+        id: assertion.id,
+        rawId: bufferToBase64url(assertion.rawId),
+        type: assertion.type,
+        response: {
+          clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+          authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+          signature: bufferToBase64url(assertion.response.signature)
+        }
+      };
+
+      const result = await fetch(`${SERVER}/api/biometric/auth/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(response)
+      }).then(r => r.json());
+
+      return !!result.verified;
+    } catch (err) {
+      showToast('No se pudo verificar: ' + err.message, 'error');
+      return false;
+    }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // Sistema "Markdown en mensajes" (cliente): misma lógica que el backend
+  // (core/utils/markdown.ts) — *negrita*, _cursiva_, ~tachado~, `código`.
+  // Placeholders protegen el contenido de código para que no se re-procese.
+  function renderMarkdown(rawText) {
+    let html = escapeHtml(rawText);
+    const codeBlocks = [];
+    html = html.replace(/`([^`]+)`/g, (_m, content) => {
+      codeBlocks.push(content);
+      return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+    });
+    html = html.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
+    html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+    html = html.replace(/~([^~\n]+)~/g, '<s>$1</s>');
+    html = html.replace(/\n/g, '<br>');
+    html = html.replace(/\u0000CODE(\d+)\u0000/g, (_m, i) => `<code>${codeBlocks[Number(i)]}</code>`);
+    return html;
+  }
+</script>
+</body>
+</html>
