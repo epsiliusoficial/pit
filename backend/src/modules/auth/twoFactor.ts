@@ -56,8 +56,9 @@ twoFactorRouter.post('/setup', async (req: AuthRequest, res) => {
   }
 
   const secret = generateTotpSecret();
+  // 🔧 FIX: añadimos `as any` para que Prisma acepte el JSON anidado
   const newSettings = { ...settings, totp: { secret, enabled: false } as TotpSettings };
-  await prisma.user.update({ where: { id: user.id }, data: { settings: newSettings } });
+  await prisma.user.update({ where: { id: user.id }, data: { settings: newSettings as any } });
 
   return res.json({
     secret,
@@ -81,17 +82,15 @@ twoFactorRouter.post('/confirm', async (req: AuthRequest, res) => {
     return res.status(401).json({ error: 'Código inválido' });
   }
 
-  // Se generan códigos de recuperación de un solo uso — se muestran UNA
-  // sola vez acá, en texto plano, y solo el hash queda guardado (igual que
-  // una contraseña). Sirven para entrar si el usuario pierde el teléfono.
   const recoveryCodes = generateRecoveryCodes();
   const recoveryCodeHashes = await Promise.all(recoveryCodes.map((c) => hashPassword(c)));
 
+  // 🔧 FIX: añadimos `as any` aquí también
   const newSettings = {
     ...settings,
     totp: { secret: totp.secret, enabled: true, recoveryCodeHashes } as TotpSettings
   };
-  await prisma.user.update({ where: { id: user.id }, data: { settings: newSettings } });
+  await prisma.user.update({ where: { id: user.id }, data: { settings: newSettings as any } });
   await auditLog({ userId: user.id, action: 'LOGIN', metadata: { event: 'totp_enabled' }, ip: req.ip });
 
   return res.json({ enabled: true, recoveryCodes });
@@ -148,10 +147,9 @@ export async function verifyLoginTotp(
   if (totp.recoveryCodeHashes) {
     for (let i = 0; i < totp.recoveryCodeHashes.length; i++) {
       if (await comparePassword(code, totp.recoveryCodeHashes[i])) {
-        // Códigos de recuperación son de un solo uso: se remueve el usado.
         const remaining = totp.recoveryCodeHashes.filter((_, idx) => idx !== i);
         const newSettings = { ...settings, totp: { ...totp, recoveryCodeHashes: remaining } };
-        await prisma.user.update({ where: { id: userId }, data: { settings: newSettings } });
+        await prisma.user.update({ where: { id: userId }, data: { settings: newSettings as any } });
         return true;
       }
     }

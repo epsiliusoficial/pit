@@ -18,19 +18,6 @@ export const biometricRouter = Router();
 
 const RP_NAME = 'Pit';
 
-// Sistema "Origen WebAuthn Confiable" (bug real corregido): antes, sin
-// FRONTEND_URL/WEBAUTHN_RP_ID configuradas, el sistema derivaba el origen y
-// el RP ID del header Host / req.protocol — ambos controlables por el
-// cliente (más aún detrás de un proxy sin "trust proxy" bien configurado).
-// Esto debilita la garantía central de WebAuthn: que la credencial está
-// atada criptográficamente a un origen específico y verificable. Si un
-// atacante puede influir en qué origen "cree" el servidor que es legítimo,
-// se abre la puerta a ataques de relay entre orígenes.
-//
-// Corrección: en producción, EXIGIMOS que FRONTEND_URL o WEBAUTHN_RP_ID estén
-// configuradas explícitamente — nunca se deriva del request. En desarrollo
-// se mantiene el fallback por comodidad (localhost es un caso especial que
-// WebAuthn permite igual).
 export function getRpID(req: any): string {
   const configured = process.env.WEBAUTHN_RP_ID || process.env.FRONTEND_URL;
   if (configured) {
@@ -39,7 +26,7 @@ export function getRpID(req: any): string {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('WEBAUTHN_RP_ID o FRONTEND_URL deben estar configuradas en producción para usar biometría de forma segura');
   }
-  return req.hostname; // solo en desarrollo, para no exigir configuración local
+  return req.hostname;
 }
 
 export function getOrigin(req: any): string {
@@ -47,10 +34,9 @@ export function getOrigin(req: any): string {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('FRONTEND_URL debe estar configurada en producción para usar biometría de forma segura');
   }
-  return `${req.protocol}://${req.get('host')}`; // solo en desarrollo
+  return `${req.protocol}://${req.get('host')}`;
 }
 
-// Paso 1: el servidor genera un desafío único para registrar una nueva credencial.
 biometricRouter.post('/register/options', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const existing = await prisma.webAuthnCredential.findMany({ where: { userId: req.userId! } });
@@ -61,25 +47,20 @@ biometricRouter.post('/register/options', authMiddleware, async (req: AuthReques
       userID: req.userId!,
       userName: req.userId!,
       attestationType: 'none',
-      excludeCredentials: existing.map((c: any) => ({ id: c.credentialId })),
+      excludeCredentials: existing.map((c: any) => ({ id: c.credentialId, type: 'public-key' })), // ✅ FIX: añadido type
       authenticatorSelection: {
         residentKey: 'preferred',
-        userVerification: 'required' // obliga a pedir Face ID/huella/PIN, no solo "estar presente"
+        userVerification: 'required'
       }
     });
 
     await redis.set(`webauthn:challenge:${req.userId}`, options.challenge, 'EX', 300);
     return res.json(options);
   } catch (err: any) {
-    // Bug real corregido: antes, si getRpID()/getOrigin() lanzaban por falta de
-    // configuración en producción, esto quedaba como una promesa rechazada sin
-    // capturar — la request se colgaba hasta el timeout en vez de dar un error
-    // claro. Ahora responde 500 con el motivo exacto.
     return res.status(500).json({ error: err.message });
   }
 });
 
-// Paso 2: el navegador devuelve la respuesta firmada por el autenticador biométrico real.
 biometricRouter.post('/register/verify', authMiddleware, async (req: AuthRequest, res) => {
   const expectedChallenge = await redis.get(`webauthn:challenge:${req.userId}`);
   if (!expectedChallenge) return res.status(400).json({ error: 'Desafío expirado, reintentá' });
@@ -113,7 +94,6 @@ biometricRouter.post('/register/verify', authMiddleware, async (req: AuthRequest
   }
 });
 
-// Paso 3: para desbloquear la app, el servidor genera un desafío de autenticación.
 biometricRouter.post('/auth/options', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const credentials = await prisma.webAuthnCredential.findMany({ where: { userId: req.userId! } });
@@ -121,7 +101,8 @@ biometricRouter.post('/auth/options', authMiddleware, async (req: AuthRequest, r
 
     const options = await generateAuthenticationOptions({
       rpID: getRpID(req),
-      allowCredentials: credentials.map((c: any) => ({ id: c.credentialId })),
+      // ✅ FIX: añadido type: 'public-key' aquí también
+      allowCredentials: credentials.map((c: any) => ({ id: c.credentialId, type: 'public-key' })),
       userVerification: 'required'
     });
 
@@ -132,7 +113,6 @@ biometricRouter.post('/auth/options', authMiddleware, async (req: AuthRequest, r
   }
 });
 
-// Paso 4: se verifica la firma real del autenticador (huella/Face ID/Windows Hello).
 biometricRouter.post('/auth/verify', authMiddleware, async (req: AuthRequest, res) => {
   const expectedChallenge = await redis.get(`webauthn:challenge:${req.userId}`);
   if (!expectedChallenge) return res.status(400).json({ error: 'Desafío expirado, reintentá' });
